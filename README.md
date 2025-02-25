@@ -1,5 +1,7 @@
 # Diseño e Implementación de un Lago de Datos Basado en Apache Iceberg para su Integración en una Arquitectura de Recuperación Aumentada
 
+## ⚠️ADVERTENCIA: WORK IN PROGRESS (WIP)⚠️
+
 ## Descripción del Proyecto
 Este repositorio contiene la implementación de un **lago de datos** basado en **Apache Iceberg**, diseñado para garantizar transacciones ACID, versionado de datos y optimización del acceso a la información. Su finalidad es integrarse con una **arquitectura de recuperación aumentada (RAG)**, permitiendo mejorar el acceso y la fiabilidad de los datos para futuras aplicaciones de inteligencia artificial.
 
