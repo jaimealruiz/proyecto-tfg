@@ -1,7 +1,10 @@
-# proyecto-tfg
-El proyecto consiste en la implementación de un lago de datos basado en Apache Iceberg para su integración en una arquitectura RAG con el propósito de enriquecer consultas mediante la integración de información almacenada antes de realizar inferencias con un modelo de Deep Seek.
+# Diseño e Implementación de un Lago de Datos Basado en Apache Iceberg para su Integración en una Arquitectura de Recuperación Aumentada
 
-## Estructura del proyecto
+## Descripción del Proyecto
+Este repositorio contiene la implementación de un **lago de datos** basado en **Apache Iceberg**, diseñado para garantizar transacciones ACID, versionado de datos y optimización del acceso a la información. Su finalidad es integrarse con una **arquitectura de recuperación aumentada (RAG)**, permitiendo mejorar el acceso y la fiabilidad de los datos para futuras aplicaciones de inteligencia artificial.
+
+## Estructura del Repositorio
+```
 📂 proyecto-tfg
 │── 📂 docs                      # Documentación del proyecto
 │   ├── propuesta_tfg.pdf
@@ -18,7 +21,7 @@ El proyecto consiste en la implementación de un lago de datos basado en Apache 
 │   ├── app/                      # Código fuente
 │   ├── main.py                   # Punto de entrada
 │   ├── requirements.txt          # Dependencias
-│── 📂 rag                        # Arquitectura RAG (diseñada por el tutor)
+│── 📂 rag                        # Arquitectura RAG
 │   ├── retrieval.py              # Módulo de recuperación
 │   ├── integration.py            # Integración con el modelo Deep Seek
 │── 📂 tests                      # Pruebas del sistema
@@ -26,3 +29,39 @@ El proyecto consiste en la implementación de un lago de datos basado en Apache 
 │   ├── test_retrieval.py
 │── README.md                     # Descripción del proyecto
 │── .gitignore                     # Archivos a ignorar en Git
+```
+
+## Tecnologías Utilizadas
+- **Apache Iceberg** para la gestión del lago de datos
+- **Docker y Kubernetes** para la contenedorización
+- **Apache Spark, Trino o Flink** para consultas y procesamiento
+- **Python** para la implementación de scripts y servicios
+- **Spring Boot** en el backend
+- **React** en el frontend
+
+## Instalación y Configuración
+### 1. Clonar el repositorio
+```bash
+git clone https://github.com/usuario/proyecto-tfg.git
+cd proyecto-tfg
+```
+### 2. Configurar y desplegar contenedores con Docker Compose
+```bash
+docker-compose up -d
+```
+### 3. Ingestar datos en Apache Iceberg
+```bash
+python data-lake/ingest_data.py
+```
+
+## Documentación
+La documentación completa sobre la arquitectura, despliegue y funcionamiento del sistema se encuentra en la carpeta `docs/`.
+
+## Licencia
+Licencia
+Todos los derechos reservados por el autor. No se permite la distribución, modificación o uso sin consentimiento explícito.
+
+## Contacto
+jaimealru99@gmail.com
+
+[LinkedIn](https://www.linkedin.com/in/jaimealonsoruiz/)
