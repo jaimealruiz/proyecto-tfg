@@ -1,0 +1,49 @@
+# Entornos virtuales
+venv/
+.env/
+*.env
+
+# Archivos temporales de Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+
+# Archivos de configuración y caché
+*.db
+*.sqlite
+*.bak
+*.swp
+*.tmp
+.DS_Store
+*.egg-info/
+.cache/
+.mypy_cache/
+.pytest_cache/
+
+# Modelos descargados y cacheados (Hugging Face, transformers, etc.)
+~/.cache/huggingface/
+~/.huggingface/
+*.pt
+*.bin
+
+# Carpeta del lago de datos Iceberg
+iceberg/
+iceberg_space/
+data/
+.parquet/
+
+# Archivos de ejecución
+*.ipynb_checkpoints
+*.log
+logs/
+
+# Archivos del editor/IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Archivos de tests temporales
+test_output/
+test_*.sql
