@@ -3,6 +3,7 @@ import torch, requests, json, logging, os
 from datetime import datetime
 
 DEBUG = False
+ENABLE_BACKUP_ANSWER = False  # En el futuro se puede activar para permitir respuestas sin datos (RAG)
 
 # Configuración de logs
 log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'logs'))
@@ -143,9 +144,26 @@ while True:
     sql = generar_sql(pregunta)
     print(f"\n🧾 Consulta generada: {sql}")
     datos = consultar_mcp(sql)
+
     if not datos:
-        print("⚠️ No se pudo obtener información.")
         logging.warning("No se obtuvo información del MCP.")
+        print("⚠️ No se pudo obtener información.")
+
+        if ENABLE_BACKUP_ANSWER:
+            prompt = f"""
+Eres un asistente útil. El sistema no ha encontrado información relevante en la base de datos para responder a la siguiente pregunta:
+
+❓ Pregunta: {pregunta}
+
+Aun así, intenta dar una respuesta útil basada en tu conocimiento general.
+"""
+            inputs = tokenizer(prompt, return_tensors="pt").to(device)
+            output = model.generate(**inputs, max_new_tokens=100, temperature=0.7, do_sample=True)
+            respuesta_backup = tokenizer.decode(output[0], skip_special_tokens=True)
+            print("\n=== RESPUESTA ALTERNATIVA ===\n")
+            print(respuesta_backup.strip())
+            logging.info(f"[Respuesta alternativa] {respuesta_backup.strip()}")
+
         continue
 
     respuesta = generar_respuesta(pregunta, datos)
