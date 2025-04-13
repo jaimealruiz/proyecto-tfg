@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  llm-client:
+    build:
+      context: ./client
+    container_name: cliente-llm
+    volumes:
+      - ./client:/app
+    depends_on:
+      - mcp-server
+    networks:
+      - tfg-network
+
+  mcp-server:
+    build:
+      context: ./server
+    container_name: servidor-mcp
+    volumes:
+      - ./server:/app
+      - ./data:/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      - lake-storage
+    networks:
+      - tfg-network
+
+  lake-storage:
+    build:
+      context: ./data
+    container_name: almacenamiento-lake
+    volumes:
+      - ./data:/data
+    networks:
+      - tfg-network
+    command: ["sleep", "infinity"]  # Mantener activo para acceso desde MCP
+
+networks:
+  tfg-network:
+    driver: bridge
