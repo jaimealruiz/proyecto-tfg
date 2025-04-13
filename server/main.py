@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import duckdb
 import os
 
+### uvicorn main:app --reload
+
 app = FastAPI(title="Servidor MCP para Apache Iceberg")
 
 app.add_middleware(
