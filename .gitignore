@@ -29,10 +29,10 @@ __pycache__/
 *.bin
 
 # Carpeta del lago de datos Iceberg
-iceberg/
-iceberg_space/
-data/
-.parquet/
+# iceberg/
+# iceberg_space/
+# data/
+# .parquet/
 
 # Archivos de ejecución
 *.ipynb_checkpoints
