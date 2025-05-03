@@ -1,13 +1,18 @@
 FROM python:3.12-slim
 
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
+# Dependencias del sistema
+RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
+
+# Instalar requirements
 COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
-# Instala las dependencias (torch==2.2.2 es la versión CPU por defecto)
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
-
+# Copiar código
 COPY . .
 
-CMD ["uvicorn", "cliente_llm_api:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8081"]
