@@ -79,3 +79,13 @@ Eres un asistente que responde preguntas de usuarios con datos de una consulta S
     output = model.generate(**inputs, max_new_tokens=200, temperature=0.5, do_sample=True)
     respuesta = tokenizer.decode(output[0], skip_special_tokens=True)
     return respuesta.strip()
+
+
+def enviar_mensaje_a2a(mensaje: dict):
+    try:
+        response = requests.post("http://mcp-server:8000/a2a/message", json=mensaje)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logging.error(f"Error al enviar mensaje A2A: {e}")
+        return {"error": str(e)}
