@@ -1,52 +1,60 @@
-
 services:
-  llm-client:
+  mcp-server:
     build:
-      context: ./client
-    container_name: cliente-llm
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: mcp-server
     volumes:
-      - ./client:/app
+      - ./server:/app
+      - ./data:/data
     ports:
-      - "8080:8080"
+      - "8000:8000"
+    networks:
+      - tfg-network
+
+  ventas-agent:
+    build:
+      context: .
+      dockerfile: agents/ventas_agent/Dockerfile
+    container_name: ventas-agent
+    volumes:
+      - ./agents/ventas_agent:/app
+      - ./server:/app/server
+    ports:
+      - "8002:8002"
+    env_file:
+      - .env
+    environment:
+      - MCP_URL=http://mcp-server:8000
+      - CALLBACK_URL=http://ventas-agent:8002/inbox
+      - VENTAS_AGENT_ID
+      - LLM_AGENT_ID
     depends_on:
       - mcp-server
     networks:
       - tfg-network
 
-  explicador-llm:
+  llm-agent:
     build:
-      context: ./explicador
-    container_name: explicador-llm
-    volumes:
-      - ./explicador:/app
+      context: .
+      dockerfile: agents/llm_agent/Dockerfile
+    container_name: llm-agent
+    # No montamos volúmenes aquí para evitar ocultar el /app que construimos
     ports:
-      - "8090:8090"
-    networks:
-      - tfg-network
-
-
-  mcp-server:
-    build:
-      context: ./server
-    container_name: servidor-mcp
-    volumes:
-      - ./server:/app
-    ports:
-      - "8000:8000"
+      - "8003:8003"
+    env_file:
+      - .env
+    environment:
+      - MCP_URL=http://mcp-server:8000
+      - CALLBACK_URL=http://llm-agent:8003/inbox
+      - VENTAS_AGENT_ID
+      - LLM_AGENT_ID
     depends_on:
-      - lake-storage
+      - mcp-server
+      - ventas-agent
     networks:
       - tfg-network
 
-  lake-storage:
-    build:
-      context: ./data
-    container_name: almacenamiento-lake
-    volumes:
-      - ./data:/data
-    networks:
-      - tfg-network
-    command: ["sleep", "infinity"]
 
 networks:
   tfg-network:

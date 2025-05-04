@@ -1,24 +1,18 @@
-FROM python:3.12-slim
+# server/Dockerfile
+FROM python:3.11-slim
 
-# Evitar prompts interactivos
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-# Crear directorio de trabajo
 WORKDIR /app
 
-# Instalar dependencias del sistema necesarias para duckdb y FastAPI
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir \
+    fastapi uvicorn[standard] \
+    duckdb requests pydantic
 
-# Instalar dependencias de Python
-COPY requirements.txt .
-RUN pip install --upgrade pip && pip install -r requirements.txt
+# Copia todo el código del servidor (incluye a2a_models.py y main.py)
+COPY server/ ./
 
-# Copiar el código fuente del servidor
-COPY . .
+# Montamos ./data en /app/data para tener lake.duckdb
+VOLUME ["/app/data"]
 
-# Lanzar el servidor FastAPI
+EXPOSE 8000
+
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

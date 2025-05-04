@@ -1,11 +1,20 @@
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch, requests, json, logging, os
+# utils/model_utils.py
 
+import re
+import json
+import logging
+import os
+import requests
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+
+# Carga del modelo TinyLlama
 modelo = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 tokenizer = AutoTokenizer.from_pretrained(modelo)
 model = AutoModelForCausalLM.from_pretrained(modelo, torch_dtype=torch.float32)
 model.to(torch.device("cpu"))
 
+# Logging a fichero
 log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'logs'))
 os.makedirs(log_dir, exist_ok=True)
 logging.basicConfig(
@@ -18,9 +27,9 @@ logging.basicConfig(
 def extraer_info_tabla():
     try:
         productos_resp = requests.get("http://mcp-server:8000/tool/info/productos")
-        fechas_resp = requests.get("http://mcp-server:8000/tool/info/fechas")
+        fechas_resp   = requests.get("http://mcp-server:8000/tool/info/fechas")
         productos = productos_resp.json().get("productos", [])
-        fechas = fechas_resp.json()
+        fechas    = fechas_resp.json()
         return productos, fechas.get("min_fecha", ""), fechas.get("max_fecha", "")
     except Exception as e:
         logging.error(f"Error metadatos MCP: {e}")
@@ -49,9 +58,19 @@ Fechas: {min_fecha} a {max_fecha}
     output = model.generate(**inputs, max_new_tokens=100, temperature=0.7, do_sample=True)
     respuesta = tokenizer.decode(output[0], skip_special_tokens=True)
 
-    sql = respuesta.split("SQL:")[-1].strip()
-    if not sql.endswith(";"):
-        sql += ";"
+    # Extraemos lo que venga tras "SQL:"
+    sql = respuesta.split("SQL:")[-1]
+
+    # 1) Quitamos fences ``` si los hubiera
+    sql = re.sub(r"```", "", sql)
+
+    # 2) Nos quedamos solo con la primera sentencia hasta el primer ';'
+    if ";" in sql:
+        sql = sql.split(";", 1)[0] + ";"
+
+    # 3) Limpiamos espacios y saltos de línea sobrantes
+    sql = sql.strip()
+
     return sql
 
 def consultar_mcp(sql: str):
@@ -79,13 +98,3 @@ Eres un asistente que responde preguntas de usuarios con datos de una consulta S
     output = model.generate(**inputs, max_new_tokens=200, temperature=0.5, do_sample=True)
     respuesta = tokenizer.decode(output[0], skip_special_tokens=True)
     return respuesta.strip()
-
-
-def enviar_mensaje_a2a(mensaje: dict):
-    try:
-        response = requests.post("http://mcp-server:8000/a2a/message", json=mensaje)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        logging.error(f"Error al enviar mensaje A2A: {e}")
-        return {"error": str(e)}
