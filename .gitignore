@@ -47,3 +47,5 @@ logs/
 # Archivos de tests temporales
 test_output/
 test_*.sql
+
+minio_data/

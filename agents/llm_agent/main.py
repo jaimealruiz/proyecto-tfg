@@ -47,6 +47,7 @@ def register_loop():
     global agent_id
     print("[LLM Agent] register_loop: iniciando…", flush=True)
 
+    # Construir payload de registro con ID de agente
     payload = AgentInfo(
         name="llm_agent",
         callback_url=CALLBACK_URL,
@@ -56,8 +57,11 @@ def register_loop():
     payload["callback_url"] = str(payload["callback_url"])
 
     print(f"[LLM Agent] payload registro: {payload}", flush=True)
+
+    # Pequeña espera para que el broker esté disponible
     time.sleep(5)
 
+    # Intentos exponenciales de registro
     for i in range(5):
         try:
             resp = requests.post(f"{MCP_URL}/agent/register", json=payload, timeout=3)
@@ -74,6 +78,7 @@ def register_loop():
 
 @app.on_event("startup")
 def on_startup():
+    # Inicio del registro en segundo plano
     threading.Thread(target=register_loop, daemon=True).start()
 
 # —————————————————————————————————————————————————————————————————————————————
@@ -99,14 +104,11 @@ async def hacer_consulta(request: Request):
 
     print(f"[LLM Agent] /query recibida: {req.pregunta}", flush=True)
 
-    loop = asyncio.get_running_loop()
-
-    # 1) Generar SQL en executor para no bloquear el loop
-    print("[LLM Agent] empezando generar_sql…", flush=True)
-    sql = await loop.run_in_executor(None, generar_sql, req.pregunta)
+    # Generar SQL con tu utils
+    sql = generar_sql(req.pregunta)
     print(f"[LLM Agent] SQL generado: {sql}", flush=True)
 
-    # 2) Preparar mensaje A2A
+    # Preparar mensaje A2A de tipo 'query'
     corr = uuid4().hex
     msg = A2AMessage(
         message_id=corr,
@@ -117,10 +119,13 @@ async def hacer_consulta(request: Request):
         body={"sql": sql, "correlation_id": corr}
     )
 
-    # 3) Enviar al broker y esperar respuesta
+    # Crear future para esperar la respuesta
+    loop = asyncio.get_running_loop()
     fut = loop.create_future()
+
     pending[corr] = fut
 
+    # Enviar al broker
     try:
         print(f"[LLM Agent] Enviando mensaje A2A a {VENTAS_AGENT}", flush=True)
         r = requests.post(f"{MCP_URL}/agent/send", json=msg.model_dump(), timeout=5)
@@ -129,15 +134,18 @@ async def hacer_consulta(request: Request):
         pending.pop(corr, None)
         raise HTTPException(502, f"Error enviando A2A: {e}")
 
+    # Esperar respuesta del carro A2A
     try:
         datos = await asyncio.wait_for(fut, timeout=30)
     except asyncio.TimeoutError:
         pending.pop(corr, None)
         raise HTTPException(504, "Timeout esperando respuesta de ventas-agent")
 
-    # 4) Generar texto final en executor
+    # Generar texto final con los datos recibidos
     print("[LLM Agent] empezando generar_respuesta…", flush=True)
-    respuesta = await loop.run_in_executor(None, generar_respuesta, req.pregunta, datos)
+
+    respuesta = generar_respuesta(req.pregunta, datos)
+    
     print("[LLM Agent] terminado generar_respuesta", flush=True)
 
     pending.pop(corr, None)
