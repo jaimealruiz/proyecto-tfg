@@ -1,12 +1,11 @@
 from fastapi import FastAPI, HTTPException
+from a2a_models import AgentInfo, Envelope
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.encoders import jsonable_encoder
 from typing import Dict
 from uuid import uuid4
 import requests
 import os
-
-from a2a_models import AgentInfo, A2AMessage
 
 app = FastAPI(title="Servidor MCP para Apache Iceberg y A2A Broker")
 
@@ -37,20 +36,29 @@ def register_agent(info: AgentInfo):
     return {"agent_id": agent_id}
 
 @app.post("/agent/send")
-def send_message(msg: A2AMessage):
-    # Verifica que el destinatario exista
-    recipient = msg.recipient
-    if recipient not in AGENTS:
-        raise HTTPException(status_code=404, detail=f"Recipient agent_id '{recipient}' no registrado")
-    callback_url = AGENTS[recipient]["callback_url"]
-    print(f"[MCP] Reenviando a {callback_url}", flush=True)
-    # Reenvía el mensaje al /inbox del agente destinatario
+def send_message(env: Envelope):
+    """
+    Recibe un Envelope A2A, verifica recipient y reenvía
+    únicamente payload al callback_url del destinatario.
+    """
+    # 1) Asegurarnos de que el destinatario existe
+    if env.recipient not in AGENTS:
+        raise HTTPException(404, f"Recipient '{env.recipient}' no registrado")
+
+    callback_url = AGENTS[env.recipient]["callback_url"]
+
+    # 2) reenvío HTTP POST -> /inbox del agente
     try:
-        resp = requests.post(f"{callback_url}", json=msg.model_dump(), timeout=30)
+        # convertir el Envelope a un JSON serializable
+        payload = jsonable_encoder(env)
+        # convertir datetimes a ISO strings
+        resp = requests.post(callback_url, json=payload, timeout=5)
         resp.raise_for_status()
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Error reenviando mensaje A2A: {e}")
+        raise HTTPException(502, f"Error reenviando mensaje A2A: {e}")
+
     return {"status": "sent"}
+
 
 # --- Endpoints MCP/tool ---
 

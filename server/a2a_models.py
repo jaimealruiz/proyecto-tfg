@@ -1,16 +1,38 @@
+# server/a2a_models.py
+
 from pydantic import BaseModel, HttpUrl
-from typing import Dict, Any, Optional
+from datetime import datetime
+from typing import Any, Dict, Literal, Optional
+
 
 class AgentInfo(BaseModel):
     name: str
     callback_url: HttpUrl
-    capabilities: Dict[str, Any] = {}
+    capabilities: Dict[str, Any]
     agent_id: Optional[str] = None
 
+
 class A2AMessage(BaseModel):
-    message_id: str
-    sender: str
-    recipient: str
-    timestamp: str     # ISO
-    type: str          # p.ej. "query" | "response" | "notification"
-    body: Dict[str, Any]
+    """
+    Mensaje de aplicación entre agentes; va dentro de Envelope.payload.
+    """
+    message_id: str                   # ID único del mensaje Lógico
+    sender: str                       # agent_id emisor
+    recipient: str                    # agent_id destinatario
+    timestamp: str                    # ISO timestamp
+    type: Literal["query", "response", "heartbeat"]
+    body: Dict[str, Any]              # payload específico (sql, resultado, etc.)
+
+
+class Envelope(BaseModel):
+    """
+    Sobre de transporte A2A según Google A2A (simplificado).
+    Envuelve un A2AMessage en payload.
+    """
+    version: str = "1.0"                             # Versión del protocolo
+    message_id: str                                  # ID único de este envelope
+    timestamp: datetime                              # cuándo se envía
+    type: Literal["query", "response", "heartbeat"]  # caso de uso
+    sender: str                                      # agent_id emisor
+    recipient: str                                   # agent_id destinatario
+    payload: Dict[str, Any]                          # el A2AMessage.model_dump()
