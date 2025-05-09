@@ -1,12 +1,17 @@
 from fastapi import FastAPI, HTTPException
 from a2a_models import AgentInfo, Envelope
+from datetime import datetime, timedelta, timezone
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from typing import Dict
 from uuid import uuid4
 import requests
+import duckdb
 import os
 
+# —————————————————————————————————————————————————————————————————————————————
+# APP & STORAGE
+# —————————————————————————————————————————————————————————————————————————————
 app = FastAPI(title="Servidor MCP para Apache Iceberg y A2A Broker")
 
 app.add_middleware(
@@ -17,11 +22,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Almacenamiento en memoria de agentes registrados
+# Almacenamiento en memoria de agentes registrados, por cada agent_id:
+#   { name, callback_url, capabilities, last_heartbeat (datetime|None) }
 AGENTS: Dict[str, dict] = {}
 
-# --- Endpoints A2A ---
+# Almacenamiento adicional de último heartbeat
+LAST_HEARTBEAT: Dict[str, datetime] = {}
+HEARTBEAT_TIMEOUT = timedelta(seconds=60)
+HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "30"))
 
+# —————————————————————————————————————————————————————————————————————————————
+# REGISTRO DE AGENTES
+# —————————————————————————————————————————————————————————————————————————————
 @app.post("/agent/register")
 def register_agent(info: AgentInfo):
     # Construir dict inicial y manejar agent_id manualmente
@@ -35,6 +47,9 @@ def register_agent(info: AgentInfo):
     AGENTS[agent_id] = payload
     return {"agent_id": agent_id}
 
+# —————————————————————————————————————————————————————————————————————————————
+# ENVÍO DE MENSAJES JAR-A2A (query/response)
+# —————————————————————————————————————————————————————————————————————————————
 @app.post("/agent/send")
 def send_message(env: Envelope):
     """
@@ -59,15 +74,46 @@ def send_message(env: Envelope):
 
     return {"status": "sent"}
 
+# —————————————————————————————————————————————————————————————————————————————
+# RECEPCIÓN DE HEARTBEAT A2A
+# —————————————————————————————————————————————————————————————————————————————
+@app.post("/agent/heartbeat")
+def agent_heartbeat(env: Envelope):
+    if env.type != "heartbeat":
+        raise HTTPException(400, "Tipo de envelope inválido para heartbeat")
+    sender = env.sender
+    if sender not in AGENTS:
+        raise HTTPException(404, f"Agent '{sender}' no registrado")
+    # Actualizamos el timestamp
+    AGENTS[sender]["last_heartbeat"] = env.timestamp.astimezone(timezone.utc)
+    return {"status": "ok"}
 
-# --- Endpoints MCP/tool ---
+# —————————————————————————————————————————————————————————————————————————————
+# ESTADO DE AGENTES REGISTRADOS
+# —————————————————————————————————————————————————————————————————————————————
+@app.get("/agent/status")
+def agent_status():
+    now = datetime.now(timezone.utc)
+    status: Dict[str, Any] = {}
+    for aid, info in AGENTS.items():
+        last = info.get("last_heartbeat")
+        status[aid] = {
+            "name": info["name"],
+            "last_heartbeat": last.isoformat() if last else None,
+            # marcamos online si hemos recibido un latido en los últimos 2 * HEARTBEAT_INTERVAL
+            "online": bool(last and (now - last).total_seconds() < (2*HEARTBEAT_INTERVAL))
+        }
+    return status
 
-import duckdb
+# —————————————————————————————————————————————————————————————————————————————
+# ENDPOINTS DE CONSULTA MCP
+# —————————————————————————————————————————————————————————————————————————————
 DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data', 'lake.duckdb'))
 con = duckdb.connect(DB_PATH)
 con.execute("LOAD iceberg;")
 
 @app.get("/tool/consulta")
+# Ejecutar consulta MCP
 def ejecutar_consulta(sql: str):
     try:
         resultado = con.execute(sql).fetchall()
@@ -78,6 +124,7 @@ def ejecutar_consulta(sql: str):
         return {"error": str(e)}
 
 @app.get("/tool/info/productos")
+# Contexto MCP
 def obtener_productos():
     try:
         resultado = con.execute("SELECT DISTINCT producto FROM iceberg_space.ventas").fetchall()
@@ -87,9 +134,11 @@ def obtener_productos():
         return {"error": str(e)}
 
 @app.get("/tool/info/fechas")
+# Contexto MCP
 def obtener_rango_fechas():
     try:
         resultado = con.execute("SELECT MIN(fecha), MAX(fecha) FROM iceberg_space.ventas").fetchone()
         return {"min_fecha": str(resultado[0]), "max_fecha": str(resultado[1])}
     except Exception as e:
         return {"error": str(e)}
+

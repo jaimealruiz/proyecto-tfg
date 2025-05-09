@@ -16,15 +16,24 @@ app = FastAPI(title="Ventas Agent (A2A)")
 # Configurar logger para que use el mismo handler de Uvicorn
 logger = logging.getLogger("uvicorn.error")
 
+# —————————————————————————————————————————————————————————————————————————————
+# CONFIGURACIÓN DESDE ENTORNO
+# —————————————————————————————————————————————————————————————————————————————
 # URL base del MCP (service name en Docker Compose)
 MCP_URL = os.getenv("MCP_URL", "http://mcp-server:8000")
 # ID fijo para este agente, leído de .env
 FIXED_AGENT_ID = os.getenv("VENTAS_AGENT_ID")
 print(f"[Ventas Agent] FIXED_AGENT_ID={FIXED_AGENT_ID!r}", flush=True)
+# Intervalo de heartbeat en segundos
+HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "30"))
+
 
 # Se almacenará aquí el agent_id tras registrarse
 agent_id: Optional[str] = None
 
+# —————————————————————————————————————————————————————————————————————————————
+# HILO DE REGISTRO A2A
+# —————————————————————————————————————————————————————————————————————————————
 def register_loop():
     global agent_id
 
@@ -37,7 +46,7 @@ def register_loop():
     ).model_dump(exclude_none=True)
     reg["callback_url"] = str(reg["callback_url"])
 
-    # 2) Pequeña espera para que MCP esté up
+    # 2) Pequeña espera para que MCP arranque
     time.sleep(5)
 
     # 3) Intentos exponenciales de registro
@@ -55,12 +64,45 @@ def register_loop():
 
     logger.error("[Ventas Agent] ERROR: no se pudo registrar en MCP tras varios intentos")
 
+# —————————————————————————————————————————————————————————————————————————————
+# HILO DE HEARTBEAT A2A
+# —————————————————————————————————————————————————————————————————————————————
+def heartbeat_loop():
+    # Envía un Envelope tipo 'heartbeat' cada HEARTBEAT_INTERVAL segundos
+    # Espera a que el agente esté registrado
+    time.sleep(HEARTBEAT_INTERVAL)
+    while True:
+        if agent_id:
+            env = Envelope(
+                version="1.0",
+                message_id=str(uuid4().hex),
+                timestamp=datetime.now(timezone.utc),
+                type="heartbeat",
+                sender=agent_id,
+                recipient=agent_id,     # el broker ignora recipient==sender
+                payload={}
+            )
+            # serializar timestamp
+            j = env.model_dump()
+            j["timestamp"] = env.timestamp.isoformat()
+            try:
+                requests.post(f"{MCP_URL}/agent/heartbeat", json=j, timeout=3).raise_for_status()
+            except:
+                pass
+        time.sleep(30)
+
 @app.on_event("startup")
 def startup_event():
     threading.Thread(target=register_loop, daemon=True).start()
+    threading.Thread(target=heartbeat_loop, daemon=True).start()
 
 @app.post("/inbox")
+# Recibe un Envelope A2A
 def inbox(env: Envelope):
+    # Ignorar los heartbeats
+    if env.type == "heartbeat":
+        logger.info(f"[Ventas Agent] heartbeat recibido de {env.sender}")
+        return {"status": "heartbeat received"}
     # 1) Desempaquetar el Envelope
     logger.info(f"[Ventas Agent] /inbox envelope tipo={env.type}")
     try:
