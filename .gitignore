@@ -21,6 +21,7 @@ __pycache__/
 .cache/
 .mypy_cache/
 .pytest_cache/
+__pycache__
 
 # Modelos descargados y cacheados (Hugging Face, transformers, etc.)
 ~/.cache/huggingface/
