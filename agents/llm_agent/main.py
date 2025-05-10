@@ -24,17 +24,17 @@ logger = logging.getLogger("uvicorn.error")
 # —————————————————————————————————————————————————————————————————————————————
 # URL base del MCP (service name en Docker Compose)
 MCP_URL        = os.getenv("MCP_URL",      "http://mcp-server:8000")
-VENTAS_AGENT   = os.getenv("VENTAS_AGENT_ID")
+# VENTAS_AGENT   = os.getenv("VENTAS_AGENT_ID")
 CALLBACK_URL   = os.getenv("CALLBACK_URL", "http://llm-agent:8003/inbox")
 # ID fijo para este agente, leído de .env
 FIXED_AGENT_ID = os.getenv("LLM_AGENT_ID")
 # Intervalo de heartbeat en segundos
 HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "30"))
 
-if not VENTAS_AGENT:
+'''if not VENTAS_AGENT:
     raise RuntimeError("Debes definir VENTAS_AGENT_ID en el .env antes de arrancar")
 
-print(f"[LLM Agent] Config → MCP_URL={MCP_URL}  VENTAS_AGENT_ID={VENTAS_AGENT}", flush=True)
+print(f"[LLM Agent] Config → MCP_URL={MCP_URL}  VENTAS_AGENT_ID={VENTAS_AGENT}", flush=True)'''
 
 agent_id: Optional[str] = None
 pending: Dict[str, asyncio.Future] = {}
@@ -139,18 +139,36 @@ async def hacer_consulta(request: Request):
     sql: str = await loop.run_in_executor(None, generar_sql, req.pregunta)
     print(f"[LLM Agent] SQL generado: {sql}", flush=True)
 
-    # 3) Construir mensaje A2A
+    # 3) Descubrir dinámicamente el agent_id de ventas-agent
+    try:
+        disc = requests.get(
+            f"{MCP_URL}/agent/discover",
+            params={"tool": "consulta_ventas"},
+            timeout=5
+        ).json()
+        # disc es un dict agent_id->info; elegimos el primero online
+        candidates = [
+            aid for aid, info in disc.items()
+            if info.get("online", False)
+        ] or list(disc.keys())
+        if not candidates:
+            raise RuntimeError("No hay agentes de ventas disponibles")
+        recipient_id = candidates[0]
+    except Exception as e:
+        raise HTTPException(502, f"Error descubriendo ventas-agent: {e}")
+    
+    # 4) Construir mensaje A2A
     corr = uuid4().hex
     msg = A2AMessage(
         message_id=corr,
         sender=agent_id,
-        recipient=VENTAS_AGENT,
+        recipient=recipient_id,
         timestamp=datetime.now(timezone.utc).isoformat(),
         type="query",
         body={"sql": sql, "correlation_id": corr}
     )
 
-    # 4) Envolver en Envelope y enviar al broker
+    # 5) Envolver en Envelope y enviar al broker
     env = Envelope(
         version="1.0",
         message_id=msg.message_id,
@@ -162,7 +180,7 @@ async def hacer_consulta(request: Request):
     )
 
     pending[corr] = loop.create_future()
-    print(f"[LLM Agent] Enviando envelope A2A a {VENTAS_AGENT}", flush=True)
+    print(f"[LLM Agent] Enviando envelope A2A a {recipient_id}", flush=True)
 
     # Serializar el Envelope a dict, y asegurarnos de que timestamp sea ISO
     envelope_dict = env.model_dump()

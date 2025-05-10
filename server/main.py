@@ -1,9 +1,9 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from a2a_models import AgentInfo, Envelope
 from datetime import datetime, timedelta, timezone
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
-from typing import Dict
+from typing import Dict, Any, List, Optional
 from uuid import uuid4
 import requests
 import duckdb
@@ -30,6 +30,35 @@ AGENTS: Dict[str, dict] = {}
 LAST_HEARTBEAT: Dict[str, datetime] = {}
 HEARTBEAT_TIMEOUT = timedelta(seconds=60)
 HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "30"))
+
+# —————————————————————————————————————————————————————————————————————————————
+# DESCUBRIMIENTO DE AGENTES POR CAPACIDAD
+# —————————————————————————————————————————————————————————————————————————————
+@app.get("/agent/discover", response_model=Dict[str, Any])
+def discover_agents(
+    role: Optional[str] = Query(None, description="Filtrar por capabilities['role']"),
+    tool: Optional[str] = Query(None, description="Filtrar por capabilities['tool']")
+):
+    """
+    Devuelve los agent_id de agentes que cumplan las capacidades solicitadas.
+    Si no se pasa ningún filtro, devuelve todos.
+    """
+    now = datetime.now(timezone.utc)
+    found: Dict[str, Any] = {}
+    for aid, info in AGENTS.items():
+        caps = info.get("capabilities", {})
+        if role and caps.get("role") != role:
+            continue
+        if tool and caps.get("tool") != tool:
+            continue
+        last = info.get("last_heartbeat")
+        found[aid] = {
+            "name": info["name"],
+            "capabilities": caps,
+            "callback_url": info["callback_url"],
+            "online": bool(last and (now - last).total_seconds() < 2 * HEARTBEAT_INTERVAL)
+        }
+    return found
 
 # —————————————————————————————————————————————————————————————————————————————
 # REGISTRO DE AGENTES
