@@ -12,19 +12,24 @@ import requests
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-
+import logging
 from server.a2a_models import A2AMessage, AgentInfo, Envelope
 from utils.model_utils import generar_sql, generar_respuesta
 
 app = FastAPI(title="LLM Agent (A2A)")
+logger = logging.getLogger("uvicorn.error")
 
 # —————————————————————————————————————————————————————————————————————————————
 # CONFIGURACIÓN DESDE ENTORNO
 # —————————————————————————————————————————————————————————————————————————————
+# URL base del MCP (service name en Docker Compose)
 MCP_URL        = os.getenv("MCP_URL",      "http://mcp-server:8000")
 VENTAS_AGENT   = os.getenv("VENTAS_AGENT_ID")
 CALLBACK_URL   = os.getenv("CALLBACK_URL", "http://llm-agent:8003/inbox")
+# ID fijo para este agente, leído de .env
 FIXED_AGENT_ID = os.getenv("LLM_AGENT_ID")
+# Intervalo de heartbeat en segundos
+HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "30"))
 
 if not VENTAS_AGENT:
     raise RuntimeError("Debes definir VENTAS_AGENT_ID en el .env antes de arrancar")
@@ -73,9 +78,37 @@ def register_loop():
             time.sleep(wait)
     raise RuntimeError("No pudo registrarse en MCP tras varios intentos")
 
+# —————————————————————————————————————————————————————————————————————————————
+# HILO DE HEARTBEAT A2A
+# —————————————————————————————————————————————————————————————————————————————
+def heartbeat_loop():
+    # Envía un Envelope tipo 'heartbeat' cada HEARTBEAT_INTERVAL segundos
+    # Espera a que el agente esté registrado
+    time.sleep(HEARTBEAT_INTERVAL)
+    while True:
+        if agent_id:
+            env = Envelope(
+                version="1.0",
+                message_id=str(uuid4().hex),
+                timestamp=datetime.now(timezone.utc),
+                type="heartbeat",
+                sender=agent_id,
+                recipient=agent_id,     # el broker ignora recipient==sender
+                payload={}
+            )
+            # serializar timestamp
+            j = env.model_dump()
+            j["timestamp"] = env.timestamp.isoformat()
+            try:
+                requests.post(f"{MCP_URL}/agent/heartbeat", json=j, timeout=3).raise_for_status()
+            except:
+                pass
+        time.sleep(HEARTBEAT_INTERVAL)
+
 @app.on_event("startup")
-def on_startup():
+def startup_event():
     threading.Thread(target=register_loop, daemon=True).start()
+    threading.Thread(target=heartbeat_loop, daemon=True).start()
 
 # —————————————————————————————————————————————————————————————————————————————
 # ESQUEMA DE PETICIÓN
@@ -161,8 +194,14 @@ async def hacer_consulta(request: Request):
 
 # —————————————————————————————————————————————————————————————————————————————
 @app.post("/inbox")
+# Recibe un Envelope A2A. 
 async def inbox(env: Envelope):
-    # 1) desplegar envelope
+    # Ignorar los heartbeats
+    if env.type == "heartbeat":
+        logger.info(f"[Ventas Agent] heartbeat recibido de {env.sender}")
+        return {"status": "heartbeat received"}
+    
+    # Desempaquetar el Envelope
     print(f"[LLM Agent] /inbox envelope tipo={env.type}", flush=True)
     msg = A2AMessage.model_validate(env.payload)
 
