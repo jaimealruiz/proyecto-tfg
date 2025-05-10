@@ -7,12 +7,13 @@ import asyncio
 from uuid import uuid4
 from datetime import datetime, timezone
 from typing import Optional, Any, Dict
+import logging
 
 import requests
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import logging
+
 from server.a2a_models import A2AMessage, AgentInfo, Envelope
 from utils.model_utils import generar_sql, generar_respuesta
 
@@ -24,17 +25,12 @@ logger = logging.getLogger("uvicorn.error")
 # —————————————————————————————————————————————————————————————————————————————
 # URL base del MCP (service name en Docker Compose)
 MCP_URL        = os.getenv("MCP_URL",      "http://mcp-server:8000")
-# VENTAS_AGENT   = os.getenv("VENTAS_AGENT_ID")
+# URL de callback del agente
 CALLBACK_URL   = os.getenv("CALLBACK_URL", "http://llm-agent:8003/inbox")
 # ID fijo para este agente, leído de .env
 FIXED_AGENT_ID = os.getenv("LLM_AGENT_ID")
 # Intervalo de heartbeat en segundos
 HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "30"))
-
-'''if not VENTAS_AGENT:
-    raise RuntimeError("Debes definir VENTAS_AGENT_ID en el .env antes de arrancar")
-
-print(f"[LLM Agent] Config → MCP_URL={MCP_URL}  VENTAS_AGENT_ID={VENTAS_AGENT}", flush=True)'''
 
 agent_id: Optional[str] = None
 pending: Dict[str, asyncio.Future] = {}
@@ -44,7 +40,7 @@ pending: Dict[str, asyncio.Future] = {}
 # —————————————————————————————————————————————————————————————————————————————
 @app.get("/ping")
 def ping():
-    print("[LLM Agent] /ping recibido", flush=True)
+    logger.info("[LLM Agent] /ping recibido")
     return {"pong": True}
 
 # —————————————————————————————————————————————————————————————————————————————
@@ -52,7 +48,7 @@ def ping():
 # —————————————————————————————————————————————————————————————————————————————
 def register_loop():
     global agent_id
-    print("[LLM Agent] register_loop: iniciando…", flush=True)
+    logger.info("[LLM Agent] register_loop: iniciando…")
 
     payload = AgentInfo(
         name="llm_agent",
@@ -62,19 +58,17 @@ def register_loop():
     ).model_dump(exclude_none=True)
     payload["callback_url"] = str(payload["callback_url"])
 
-    print(f"[LLM Agent] payload registro: {payload}", flush=True)
     time.sleep(5)
-
     for i in range(5):
         try:
             resp = requests.post(f"{MCP_URL}/agent/register", json=payload, timeout=3)
             resp.raise_for_status()
             agent_id = resp.json()["agent_id"]
-            print(f"[LLM Agent] registrado con id={agent_id}", flush=True)
+            logger.info(f"[LLM Agent] registrado con id={agent_id}")
             return
         except Exception as e:
             wait = 2 ** i
-            print(f"[LLM Agent] intento {i+1} fallo ({e}), retry en {wait}s", flush=True)
+            logger.warning(f"[LLM Agent] intento {i+1} fallo ({e}), retry en {wait}s")
             time.sleep(wait)
     raise RuntimeError("No pudo registrarse en MCP tras varios intentos")
 
@@ -131,15 +125,15 @@ async def hacer_consulta(request: Request):
     if agent_id is None:
         raise HTTPException(503, "Aún no registrado en MCP; inténtalo de nuevo en unos segundos.")
 
-    print(f"[LLM Agent] /query recibida: {req.pregunta}", flush=True)
+    logger.info(f"[LLM Agent] /query recibida: {req.pregunta}")
     loop = asyncio.get_running_loop()
 
-    # 2) Generar SQL en executor
-    print("[LLM Agent] empezando generar_sql…", flush=True)
+    # 2) Generar SQL
+    logger.info("[LLM Agent] empezando a generar sql…")
     sql: str = await loop.run_in_executor(None, generar_sql, req.pregunta)
-    print(f"[LLM Agent] SQL generado: {sql}", flush=True)
+    logger.info(f"[LLM Agent] SQL generado: {sql}")
 
-    # 3) Descubrir dinámicamente el agent_id de ventas-agent
+    # 3) Descubrir dinámicamente destinatario
     try:
         disc = requests.get(
             f"{MCP_URL}/agent/discover",
@@ -152,10 +146,10 @@ async def hacer_consulta(request: Request):
             if info.get("online", False)
         ] or list(disc.keys())
         if not candidates:
-            raise RuntimeError("No hay agentes de ventas disponibles")
+            raise RuntimeError("No hay destinatarios disponibles")
         recipient_id = candidates[0]
     except Exception as e:
-        raise HTTPException(502, f"Error descubriendo ventas-agent: {e}")
+        raise HTTPException(502, f"Error descubriendo destinatario: {e}")
     
     # 4) Construir mensaje A2A
     corr = uuid4().hex
@@ -179,12 +173,12 @@ async def hacer_consulta(request: Request):
         payload=msg.model_dump()
     )
 
-    pending[corr] = loop.create_future()
-    print(f"[LLM Agent] Enviando envelope A2A a {recipient_id}", flush=True)
-
     # Serializar el Envelope a dict, y asegurarnos de que timestamp sea ISO
     envelope_dict = env.model_dump()
     envelope_dict["timestamp"] = env.timestamp.isoformat()
+
+    pending[corr] = loop.create_future()
+    logger.info(f"[LLM Agent] Enviando envelope A2A a {recipient_id}")
 
     # Función síncrona que envía el dict
     def send_env_payload(payload: Dict[str, Any]):
@@ -201,13 +195,13 @@ async def hacer_consulta(request: Request):
         pending.pop(corr, None)
         raise HTTPException(504, "Timeout esperando respuesta de ventas-agent")
 
-    # 6) Generar respuesta en executor
-    print("[LLM Agent] empezando generar_respuesta…", flush=True)
+    # 6) Generar respuesta
+    logger.info("[LLM Agent] empezando generar_respuesta…")
     respuesta: str = await loop.run_in_executor(None, generar_respuesta, req.pregunta, datos)
-    print("[LLM Agent] terminado generar_respuesta", flush=True)
+    logger.info("[LLM Agent] terminado generar_respuesta")
 
     pending.pop(corr, None)
-    print("[LLM Agent] respuesta final lista", flush=True)
+    logger.info("[LLM Agent] respuesta final lista")
     return {"sql": sql, "respuesta": respuesta}
 
 # —————————————————————————————————————————————————————————————————————————————
@@ -220,14 +214,14 @@ async def inbox(env: Envelope):
         return {"status": "heartbeat received"}
     
     # Desempaquetar el Envelope
-    print(f"[LLM Agent] /inbox envelope tipo={env.type}", flush=True)
     msg = A2AMessage.model_validate(env.payload)
-
     corr = msg.body.get("correlation_id")
-    print(f"[LLM Agent] inbox recibido correlation_id={corr} (pending={list(pending.keys())})", flush=True)
+    logger.info(f"[LLM Agent] inbox recibido correlation_id={corr} (pending={list(pending.keys())})")
+    
     if msg.type == "response" and corr in pending:
         fut = pending[corr]
         if not fut.done():
             fut.set_result(msg.body.get("resultado", []))
             return {"status": "ok"}
+        
     return {"status": "ignored"}
