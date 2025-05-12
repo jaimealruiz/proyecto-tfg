@@ -23,7 +23,6 @@ logger = logging.getLogger("uvicorn.error")
 MCP_URL = os.getenv("MCP_URL", "http://mcp-server:8000")
 # ID fijo para este agente, leído de .env
 FIXED_AGENT_ID = os.getenv("VENTAS_AGENT_ID")
-print(f"[Ventas Agent] FIXED_AGENT_ID={FIXED_AGENT_ID!r}", flush=True)
 # Intervalo de heartbeat en segundos
 HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "30"))
 
