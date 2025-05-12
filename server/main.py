@@ -32,7 +32,7 @@ HEARTBEAT_TIMEOUT = timedelta(seconds=60)
 HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "30"))
 
 # —————————————————————————————————————————————————————————————————————————————
-# DESCUBRIMIENTO DE AGENTES POR CAPACIDAD
+# DESCUBRIMIENTO DINÁMICO DE AGENTES
 # —————————————————————————————————————————————————————————————————————————————
 @app.get("/agent/discover", response_model=Dict[str, Any])
 def discover_agents(
