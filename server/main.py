@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Query
-from a2a_models import AgentInfo, Envelope
+from a2a_models import AgentInfo, Envelope, ServiceCard
 from datetime import datetime, timedelta, timezone
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
@@ -77,6 +77,59 @@ def register_agent(info: AgentInfo):
     return {"agent_id": agent_id}
 
 # —————————————————————————————————————————————————————————————————————————————
+# AGENT CARD: DINAMIC AGENT DISCOVERY
+# —————————————————————————————————————————————————————————————————————————————
+@app.get("/agent/cards")
+# Devuelve el Agent Card de todos los agentes registrados: name, callback_url,
+# capabilities, last_heartbeat (ISO) y online (bool)
+def agent_cards():
+    now = datetime.now(timezone.utc)
+    cards: Dict[str, Any] = {}
+    for aid, info in AGENTS.items():
+        last = info.get("last_heartbeat")
+        online = bool(last and (now - last).total_seconds() < (2 * HEARTBEAT_INTERVAL))
+        cards[aid] = {
+            "agent_id": aid,
+            "name": info["name"],
+            "callback_url": info["callback_url"],
+            "capabilities": info["capabilities"],
+            "last_heartbeat": last if last else None,
+            "online": online,
+        }
+    return cards
+
+@app.get("/agent/card/{agent_id}")
+# Devuelve el Agent Card del agente con ID dado
+def get_agent_card(agent_id: str):
+    card = AGENTS.get(agent_id)
+    if not card:
+        raise HTTPException(404, f"Agent '{agent_id}' no registrado")
+    return card
+
+# —————————————————————————————————————————————————————————————————————————————
+# SERVICE CARDS: DINAMIC SERVICE DISCOVERY
+# —————————————————————————————————————————————————————————————————————————————
+@app.get("/agent/services", response_model=Dict[str, Any])
+def service_cards(service: str):
+    now = datetime.now(timezone.utc)
+    results = {}
+    for aid, info in AGENTS.items():
+        caps = info.get("capabilities", {})
+        if caps.get("tool") != service and caps.get("role") != service:
+            continue
+        last = info.get("last_heartbeat")
+        online = bool(last and (now - last).total_seconds() < 2 * HEARTBEAT_INTERVAL)
+        results[aid] = {
+            "agent_id":      aid,
+            "name":          info["name"],
+            "callback_url":  info["callback_url"],
+            "capabilities":  caps,
+            "last_heartbeat": last if last else None,
+            "online":        online,
+        }
+    return results
+
+# —————————————————————————————————————————————————————————————————————————————
 # ENVÍO DE MENSAJES JAR-A2A (query/response)
 # —————————————————————————————————————————————————————————————————————————————
 @app.post("/agent/send")
@@ -128,7 +181,7 @@ def agent_status():
         last = info.get("last_heartbeat")
         status[aid] = {
             "name": info["name"],
-            "last_heartbeat": last.isoformat() if last else None,
+            "last_heartbeat": last if last else None,
             # marcamos online si hemos recibido un latido en los últimos 2 * HEARTBEAT_INTERVAL
             "online": bool(last and (now - last).total_seconds() < (2*HEARTBEAT_INTERVAL))
         }

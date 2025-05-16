@@ -19,8 +19,8 @@ class A2AMessage(BaseModel):
     message_id: str                   # ID único del mensaje Lógico
     sender: str                       # agent_id emisor
     recipient: str                    # agent_id destinatario
-    timestamp: str                    # ISO timestamp
-    type: Literal["query", "response", "heartbeat"]
+    timestamp: datetime                    # ISO timestamp
+    type: Literal["query", "response", "heartbeat", "ack"]
     body: Dict[str, Any]              # payload específico (sql, resultado, etc.)
 
 
@@ -32,7 +32,15 @@ class Envelope(BaseModel):
     version: str = "1.0"                             # Versión del protocolo
     message_id: str                                  # ID único de este envelope
     timestamp: datetime                              # cuándo se envía
-    type: Literal["query", "response", "heartbeat"]  # caso de uso
+    type: Literal["query", "response", "heartbeat", "ack"]
     sender: str                                      # agent_id emisor
     recipient: str                                   # agent_id destinatario
     payload: Dict[str, Any]                          # el A2AMessage.model_dump()
+
+
+class ServiceCard(BaseModel):
+    service_id: str
+    description: str
+    input_schema: Dict[str, Any]   # p.ej. {"sql": "string"}
+    output_schema: Dict[str, Any]  # p.ej. {"resultado": "list[dict]"}
+    version: str = "1.0"

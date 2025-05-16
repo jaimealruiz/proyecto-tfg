@@ -82,8 +82,7 @@ def heartbeat_loop():
                 payload={}
             )
             # serializar timestamp
-            j = env.model_dump()
-            j["timestamp"] = env.timestamp.isoformat()
+            j = env.model_dump(mode="json")
             try:
                 requests.post(f"{MCP_URL}/agent/heartbeat", json=j, timeout=3).raise_for_status()
             except:
@@ -102,6 +101,11 @@ def inbox(env: Envelope):
     if env.type == "heartbeat":
         logger.info(f"[Ventas Agent] heartbeat recibido de {env.sender}")
         return {"status": "heartbeat received"}
+    
+    if env.type == "ack":
+        logger.info(f"[Ventas Agent] ACK recibido para mensaje {env.payload.get('correlation_id')}")
+        return {"status": "ack recibido"}
+    
     # 1) Desempaquetar el Envelope
     logger.info(f"[Ventas Agent] /inbox envelope tipo={env.type}")
     try:
@@ -109,8 +113,36 @@ def inbox(env: Envelope):
     except Exception as e:
         logger.error(f"[Ventas Agent] error validando A2AMessage: {e}")
         raise HTTPException(400, f"Payload inválido: {e}")
+    
+    # 2) Envía ACK inmediato al recibir un Envelope
+    ack_msg = A2AMessage(
+        message_id=str(uuid4()),
+        sender=agent_id,
+        recipient=env.sender,
+        timestamp=datetime.now(timezone.utc),
+        type="ack",
+        body={
+            "status": "received",
+            "correlation_id": env.message_id
+        }
+    )
 
-    # 2) Validar que es una query
+    ack_env = Envelope(
+        version="1.0",
+        message_id=ack_msg.message_id,
+        timestamp=datetime.now(timezone.utc),
+        type="ack",
+        sender=ack_msg.sender,
+        recipient=ack_msg.recipient,
+        payload=ack_msg.model_dump(mode="json")
+    )
+
+
+    # Enviar ACK al MCP
+    requests.post(f"{MCP_URL}/agent/send", json=ack_env.model_dump(mode="json"), timeout=5)
+
+
+    # 3) Validar que es una query
     if msg.type != "query" or "sql" not in msg.body or "correlation_id" not in msg.body:
         raise HTTPException(400, "Mensaje inválido: debe incluir type='query', body.sql y body.correlation_id")
 
@@ -118,7 +150,7 @@ def inbox(env: Envelope):
     corr = msg.body["correlation_id"]
     logger.info(f"[Ventas Agent] consulta recibida (corr={corr}): {sql}")
 
-    # 3) Ejecutar consulta SQL vía MCP/tool/consulta
+    # 4) Ejecutar consulta SQL vía MCP/tool/consulta
     try:
         tool_resp = requests.get(
             f"{MCP_URL}/tool/consulta",
@@ -131,12 +163,12 @@ def inbox(env: Envelope):
 
     resultados = tool_resp.json().get("resultado", [])
 
-    # 4) Construir A2AMessage de respuesta
+    # 5) Construir A2AMessage de respuesta
     reply = A2AMessage(
         message_id=str(uuid4()),
         sender=agent_id,
         recipient=msg.sender,
-        timestamp=datetime.now(timezone.utc).isoformat(),
+        timestamp=datetime.now(timezone.utc),
         type="response",
         body={
             "resultado": resultados,
@@ -144,7 +176,7 @@ def inbox(env: Envelope):
         }
     )
 
-    # 5) Envolver en Envelope y reenviar al broker
+    # 6) Envolver en Envelope y reenviar al broker
     env_out = Envelope(
         version="1.0",
         message_id=reply.message_id,
@@ -154,10 +186,8 @@ def inbox(env: Envelope):
         recipient=reply.recipient,
         payload=reply.model_dump()
     )
-    # Serializar timestamp a ISO
-    out_dict = env_out.model_dump()
-    out_dict["timestamp"] = env_out.timestamp.isoformat()
-
+    # Serializar timestamp
+    out_dict = env_out.model_dump(mode="json")
     logger.info(f"[Ventas Agent] reenviando respuesta A2A (corr={corr}) a broker")
     try:
         send_resp = requests.post(

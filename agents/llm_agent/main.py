@@ -91,8 +91,7 @@ def heartbeat_loop():
                 payload={}
             )
             # serializar timestamp
-            j = env.model_dump()
-            j["timestamp"] = env.timestamp.isoformat()
+            j = env.model_dump(mode="json")
             try:
                 requests.post(f"{MCP_URL}/agent/heartbeat", json=j, timeout=3).raise_for_status()
             except:
@@ -133,23 +132,27 @@ async def hacer_consulta(request: Request):
     sql: str = await loop.run_in_executor(None, generar_sql, req.pregunta)
     logger.info(f"[LLM Agent] SQL generado: {sql}")
 
-    # 3) Descubrir dinámicamente destinatario
+    # 3) Descubrir dinámicamente destinatario mediante Service Cards
     try:
-        disc = requests.get(
-            f"{MCP_URL}/agent/discover",
-            params={"tool": "consulta_ventas"},
+        resp = requests.get(
+            f"{MCP_URL}/agent/services",
+            params={"service": "consulta_ventas"},
             timeout=5
-        ).json()
-        # disc es un dict agent_id->info; elegimos el primero online
+        )
+        resp.raise_for_status()
+        svc_cards = resp.json()  # es un dict: {agent_id: card, ...}
+        # filtra entre los agentes online
         candidates = [
-            aid for aid, info in disc.items()
-            if info.get("online", False)
-        ] or list(disc.keys())
+            (aid, card)
+            for aid, card in svc_cards.items()
+            if card.get("online")
+        ]
         if not candidates:
-            raise RuntimeError("No hay destinatarios disponibles")
-        recipient_id = candidates[0]
+            raise HTTPException(502, "No hay agentes de ventas online")
+        # elegir el primero
+        recipient_id, recipient_card = candidates[0]
     except Exception as e:
-        raise HTTPException(502, f"Error descubriendo destinatario: {e}")
+        raise HTTPException(502, f"Error resolviendo Service Cards: {e}")
     
     # 4) Construir mensaje A2A
     corr = uuid4().hex
@@ -157,7 +160,7 @@ async def hacer_consulta(request: Request):
         message_id=corr,
         sender=agent_id,
         recipient=recipient_id,
-        timestamp=datetime.now(timezone.utc).isoformat(),
+        timestamp=datetime.now(timezone.utc),
         type="query",
         body={"sql": sql, "correlation_id": corr}
     )
@@ -174,8 +177,7 @@ async def hacer_consulta(request: Request):
     )
 
     # Serializar el Envelope a dict, y asegurarnos de que timestamp sea ISO
-    envelope_dict = env.model_dump()
-    envelope_dict["timestamp"] = env.timestamp.isoformat()
+    envelope_dict = env.model_dump(mode="json")
 
     pending[corr] = loop.create_future()
     logger.info(f"[LLM Agent] Enviando envelope A2A a {recipient_id}")
@@ -212,12 +214,37 @@ async def inbox(env: Envelope):
     if env.type == "heartbeat":
         logger.info(f"[Ventas Agent] heartbeat recibido de {env.sender}")
         return {"status": "heartbeat received"}
+    if env.type == "ack":
+        try:
+            ack_msg = A2AMessage.model_validate(env.payload)
+            corr = ack_msg.body.get("correlation_id")
+            logger.info(f"[LLM Agent] ACK recibido para mensaje {corr}")
+        except Exception as e:
+            logger.warning(f"[LLM Agent] ACK recibido mal formado: {e}")
+        return {"status": "ack recibido"}
+
     
-    # Desempaquetar el Envelope
+    # 1) Desempaquetar el Envelope
     msg = A2AMessage.model_validate(env.payload)
     corr = msg.body.get("correlation_id")
     logger.info(f"[LLM Agent] inbox recibido correlation_id={corr} (pending={list(pending.keys())})")
     
+    # 2) Envía ACK inmediato al recibir un Envelope
+    ack_envelope = Envelope(
+        version="1.0",
+        message_id=str(uuid4().hex),
+        timestamp=datetime.now(timezone.utc),
+        type="ack",
+        sender=agent_id,
+        recipient=env.sender,
+        payload={
+            "status": "received",
+            "correlation_id": env.message_id
+        }
+    )
+    # Enviar ACK al MCP
+    requests.post(f"{MCP_URL}/agent/send", json=ack_envelope.model_dump(mode="json"), timeout=5)
+
     if msg.type == "response" and corr in pending:
         fut = pending[corr]
         if not fut.done():
