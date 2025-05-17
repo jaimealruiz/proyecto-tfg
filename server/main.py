@@ -149,7 +149,7 @@ def send_message(env: Envelope):
         # convertir el Envelope a un JSON serializable
         payload = jsonable_encoder(env)
         # convertir datetimes a ISO strings
-        resp = requests.post(callback_url, json=payload, timeout=5)
+        resp = requests.post(callback_url, json=payload, timeout=20)
         resp.raise_for_status()
     except Exception as e:
         raise HTTPException(502, f"Error reenviando mensaje A2A: {e}")

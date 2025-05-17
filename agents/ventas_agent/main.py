@@ -7,13 +7,15 @@ import requests
 from uuid import uuid4
 from datetime import datetime, timezone
 import logging
-from typing import Optional
+from typing import Optional, Dict, Tuple, Any
 from fastapi import FastAPI, HTTPException
 from server.a2a_models import A2AMessage, AgentInfo, Envelope
+from requests.exceptions import ReadTimeout
 
+import asyncio
+
+# —————————————————————————————————————————————————————————————————————————————
 app = FastAPI(title="Ventas Agent (A2A)")
-
-# Configurar logger para que use el mismo handler de Uvicorn
 logger = logging.getLogger("uvicorn.error")
 
 # —————————————————————————————————————————————————————————————————————————————
@@ -26,10 +28,27 @@ FIXED_AGENT_ID = os.getenv("VENTAS_AGENT_ID")
 # Intervalo de heartbeat en segundos
 HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "30"))
 
+# Estado de retransmisiones: message_id → (Envelope, attempts, next_timeout)
+pending_acks: Dict[str, Tuple[Envelope, int, float]] = {}
+BASE_ACK_TIMEOUT = 5.0    # segundos antes del primer reintento
+MAX_ACK_ATTEMPTS = 3      # máximo de envíos por mensaje
 
 # Se almacenará aquí el agent_id tras registrarse
 agent_id: Optional[str] = None
 
+# —————————————————————————————————————————————————————————————————————————————
+# Helper para enviar ACKs
+# —————————————————————————————————————————————————————————————————————————————
+def _send_ack(env_dict: Dict[str, Any]):
+    """
+    Envía un ACK al broker sin bloquear el handler.
+    """
+    try:
+        logger.info(f"[LLM Agent] Lanzando hilo de envío ACK {env_dict['message_id']}")
+        requests.post(f"{MCP_URL}/agent/send", json=env_dict, timeout=15).raise_for_status()
+        logger.info("[Ventas Agent] ACK enviado correctamente")
+    except Exception as e:
+        logger.error(f"[Ventas Agent] Error enviando ACK: {e}")
 # —————————————————————————————————————————————————————————————————————————————
 # HILO DE REGISTRO A2A
 # —————————————————————————————————————————————————————————————————————————————
@@ -94,16 +113,67 @@ def startup_event():
     threading.Thread(target=register_loop, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
 
+# —————————————————————————————————————————————————————————————————————————————
+# RETRANSMISIÓN DE MENSAJES A2A SI NO LLEGA ACK
+# —————————————————————————————————————————————————————————————————————————————
+async def send_with_retries(env: Envelope):
+    
+    # Envía un Envelope y, si no llega ACK, lo reintenta con backoff exponencial.
+    envelope_dict = env.model_dump(mode="json")
+    msg_id = env.message_id
+    attempts = 0
+    timeout = BASE_ACK_TIMEOUT
+
+    # Registrar el primer estado
+    pending_acks[msg_id] = (env, attempts, timeout)
+
+    while attempts < MAX_ACK_ATTEMPTS:
+        attempts += 1
+        try:
+            # Envío real
+            requests.post(f"{MCP_URL}/agent/send", json=envelope_dict, timeout=20).raise_for_status()
+            logger.info(f"[LLM Agent] Envío {msg_id}, intento {attempts}")
+        except ReadTimeout:
+            logger.warning(f"[LLM Agent] Primer intento de envío {msg_id} superó timeout... reintentando")
+        except Exception as e:
+            logger.error(f"[LLM Agent] Error enviando {msg_id} (intento {attempts}): {e}")
+
+        # Esperar el timeout antes de posible reintento
+        await asyncio.sleep(timeout)
+
+        # Si ya recibimos ACK, salimos
+        if msg_id not in pending_acks:
+            return
+
+        # Ajustar backoff
+        timeout *= 2
+        pending_acks[msg_id] = (env, attempts, timeout)
+
+    # Si expiraron los intentos
+    logger.error(f"[LLM Agent] No se recibió ACK para {msg_id} tras {MAX_ACK_ATTEMPTS} intentos")
+    pending_acks.pop(msg_id, None)
+
+# —————————————————————————————————————————————————————————————————————————————
+# RECEPCIÓN DE MENSAJES A2A
+# —————————————————————————————————————————————————————————————————————————————
 @app.post("/inbox")
 # Recibe un Envelope A2A
-def inbox(env: Envelope):
+async def inbox(env: Envelope):
     # Ignorar los heartbeats
     if env.type == "heartbeat":
         logger.info(f"[Ventas Agent] heartbeat recibido de {env.sender}")
         return {"status": "heartbeat received"}
     
+    # Manejar ACKs entrantes
     if env.type == "ack":
-        logger.info(f"[Ventas Agent] ACK recibido para mensaje {env.payload.get('correlation_id')}")
+        try:
+            ack_msg = A2AMessage.model_validate(env.payload)
+            corr = ack_msg.body.get("correlation_id")
+            if corr in pending_acks:
+                pending_acks.pop(corr)
+                logger.info(f"[Ventas Agent] ACK recibido para mensaje {corr}, cancelando retransmisiones.")
+        except Exception as e:
+            logger.warning(f"[Ventas Agent] ACK mal formado: {e}")
         return {"status": "ack recibido"}
     
     # 1) Desempaquetar el Envelope
@@ -126,7 +196,6 @@ def inbox(env: Envelope):
             "correlation_id": env.message_id
         }
     )
-
     ack_env = Envelope(
         version="1.0",
         message_id=ack_msg.message_id,
@@ -136,21 +205,17 @@ def inbox(env: Envelope):
         recipient=ack_msg.recipient,
         payload=ack_msg.model_dump(mode="json")
     )
-
-
-    # Enviar ACK al MCP
-    requests.post(f"{MCP_URL}/agent/send", json=ack_env.model_dump(mode="json"), timeout=5)
-
+    env_dict = ack_env.model_dump(mode="json")
+    threading.Thread(target=_send_ack, args=(env_dict,), daemon=True).start()
 
     # 3) Validar que es una query
     if msg.type != "query" or "sql" not in msg.body or "correlation_id" not in msg.body:
         raise HTTPException(400, "Mensaje inválido: debe incluir type='query', body.sql y body.correlation_id")
 
+    # 4) Ejecutar consulta SQL vía MCP/tool/consulta
     sql = msg.body["sql"]
     corr = msg.body["correlation_id"]
     logger.info(f"[Ventas Agent] consulta recibida (corr={corr}): {sql}")
-
-    # 4) Ejecutar consulta SQL vía MCP/tool/consulta
     try:
         tool_resp = requests.get(
             f"{MCP_URL}/tool/consulta",
@@ -184,19 +249,11 @@ def inbox(env: Envelope):
         type=reply.type,
         sender=reply.sender,
         recipient=reply.recipient,
-        payload=reply.model_dump()
+        payload=reply.model_dump(mode="json")
     )
-    # Serializar timestamp
-    out_dict = env_out.model_dump(mode="json")
     logger.info(f"[Ventas Agent] reenviando respuesta A2A (corr={corr}) a broker")
-    try:
-        send_resp = requests.post(
-            f"{MCP_URL}/agent/send",
-            json=out_dict,
-            timeout=5
-        )
-        send_resp.raise_for_status()
-    except Exception as e:
-        raise HTTPException(502, f"Error reenviando respuesta A2A: {e}")
+    
+    # 7) Envío con retransmisiones y ACKs
+    await send_with_retries(env_out)
 
     return {"status": "ok"}
