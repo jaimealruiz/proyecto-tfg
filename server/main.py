@@ -1,13 +1,15 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from a2a_models import AgentInfo, Envelope, ServiceCard
 from datetime import datetime, timedelta, timezone
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from typing import Dict, Any, List, Optional
 from uuid import uuid4
+import threading
 import requests
 import duckdb
 import os
+from security.security import verify_jwt_token
 
 # —————————————————————————————————————————————————————————————————————————————
 # APP & STORAGE
@@ -31,6 +33,11 @@ LAST_HEARTBEAT: Dict[str, datetime] = {}
 HEARTBEAT_TIMEOUT = timedelta(seconds=60)
 HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "30"))
 
+BROKER_ID = os.getenv("BROKER_ID", "mcp-server")
+
+# Almacenamiento de claves públicas
+PUBLIC_KEYS_DIR = os.getenv("PUBLIC_KEYS_DIR")
+
 # —————————————————————————————————————————————————————————————————————————————
 # DESCUBRIMIENTO DE AGENTES POR CAPACIDAD
 # —————————————————————————————————————————————————————————————————————————————
@@ -53,10 +60,10 @@ def discover_agents(
             continue
         last = info.get("last_heartbeat")
         found[aid] = {
-            "name": info["name"],
-            "capabilities": caps,
-            "callback_url": info["callback_url"],
-            "online": bool(last and (now - last).total_seconds() < 2 * HEARTBEAT_INTERVAL)
+            "name":           info["name"],
+            "capabilities":   caps,
+            "callback_url":   info["callback_url"],
+            "online":         bool(last and (now - last).total_seconds() < 2 * HEARTBEAT_INTERVAL)
         }
     return found
 
@@ -80,27 +87,31 @@ def register_agent(info: AgentInfo):
 # AGENT CARD: DINAMIC AGENT DISCOVERY
 # —————————————————————————————————————————————————————————————————————————————
 @app.get("/agent/cards")
-# Devuelve el Agent Card de todos los agentes registrados: name, callback_url,
-# capabilities, last_heartbeat (ISO) y online (bool)
 def agent_cards():
+    """
+    Devuelve el Agent Card de todos los agentes registrados:
+    name, callback_url, capabilities, last_heartbeat (ISO) y online (bool)
+    """
     now = datetime.now(timezone.utc)
     cards: Dict[str, Any] = {}
     for aid, info in AGENTS.items():
         last = info.get("last_heartbeat")
         online = bool(last and (now - last).total_seconds() < (2 * HEARTBEAT_INTERVAL))
         cards[aid] = {
-            "agent_id": aid,
-            "name": info["name"],
-            "callback_url": info["callback_url"],
-            "capabilities": info["capabilities"],
+            "agent_id":       aid,
+            "name":           info["name"],
+            "callback_url":   info["callback_url"],
+            "capabilities":   info["capabilities"],
             "last_heartbeat": last if last else None,
-            "online": online,
+            "online":         online,
         }
     return cards
 
 @app.get("/agent/card/{agent_id}")
-# Devuelve el Agent Card del agente con ID dado
 def get_agent_card(agent_id: str):
+    """
+    Devuelve el Agent Card del agente con ID dado
+    """
     card = AGENTS.get(agent_id)
     if not card:
         raise HTTPException(404, f"Agent '{agent_id}' no registrado")
@@ -120,53 +131,98 @@ def service_cards(service: str):
         last = info.get("last_heartbeat")
         online = bool(last and (now - last).total_seconds() < 2 * HEARTBEAT_INTERVAL)
         results[aid] = {
-            "agent_id":      aid,
-            "name":          info["name"],
-            "callback_url":  info["callback_url"],
-            "capabilities":  caps,
+            "agent_id":       aid,
+            "name":           info["name"],
+            "callback_url":   info["callback_url"],
+            "capabilities":   caps,
             "last_heartbeat": last if last else None,
-            "online":        online,
+            "online":         online,
         }
     return results
+
+# —————————————————————————————————————————————————————————————————————————————
+# Helper de entrega asíncrona de mensajes A2A
+# —————————————————————————————————————————————————————————————————————————————
+def _deliver_message(token: str, callback_url: str):
+    """
+    Reenvía el JWT original al callback del agente destino
+    en un hilo aparte para no bloquear el event loop.
+    """
+    try:
+        resp = requests.post(
+            callback_url,
+            json={"jwt": token},
+            timeout=20
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        # Loguear el error de entrega para diagnóstico
+        print(f"[MCP] Error reenviando mensaje a {callback_url}: {e}")
 
 # —————————————————————————————————————————————————————————————————————————————
 # ENVÍO DE MENSAJES JAR-A2A (query/response)
 # —————————————————————————————————————————————————————————————————————————————
 @app.post("/agent/send")
-def send_message(env: Envelope):
+async def send_message(request: Request):
     """
-    Recibe un Envelope A2A, verifica recipient y reenvía
-    únicamente payload al callback_url del destinatario.
+    Recibe un JWT firmado con un Envelope A2A, verifica la firma,
+    valida el recipient y encola la entrega en background.
     """
-    # 1) Asegurarnos de que el destinatario existe
+    body = await request.json()
+    token = body.get("jwt")
+    if not token:
+        raise HTTPException(400, "Se esperaba {'jwt': <token>}")
+
+    # 1) Verificar firma y reconstruir Envelope
+    try:
+        env_dict = verify_jwt_token(token)
+        env = Envelope.model_validate(env_dict)
+    except Exception as e:
+        raise HTTPException(400, f"JWT inválido o firma no verificada: {e}")
+
+    # 2) Asegurarnos de que el destinatario existe
     if env.recipient not in AGENTS:
         raise HTTPException(404, f"Recipient '{env.recipient}' no registrado")
-
     callback_url = AGENTS[env.recipient]["callback_url"]
 
-    # 2) reenvío HTTP POST -> /inbox del agente
-    try:
-        # convertir el Envelope a un JSON serializable
-        payload = jsonable_encoder(env)
-        # convertir datetimes a ISO strings
-        resp = requests.post(callback_url, json=payload, timeout=20)
-        resp.raise_for_status()
-    except Exception as e:
-        raise HTTPException(502, f"Error reenviando mensaje A2A: {e}")
+    # 3) Encolar la entrega del mismo JWT al /inbox del agente
+    threading.Thread(
+        target=_deliver_message,
+        args=(token, callback_url),
+        daemon=True
+    ).start()
 
-    return {"status": "sent"}
+    # 4) Responder inmediatamente con accepted para no bloquear al emisor
+    return {"status": "accepted"}
 
 # —————————————————————————————————————————————————————————————————————————————
 # RECEPCIÓN DE HEARTBEAT A2A
 # —————————————————————————————————————————————————————————————————————————————
 @app.post("/agent/heartbeat")
-def agent_heartbeat(env: Envelope):
+async def agent_heartbeat(request: Request):
+    """
+    Recibe un JWT firmado con un Envelope tipo 'heartbeat',
+    verifica la firma y actualiza last_heartbeat.
+    """
+    body = await request.json()
+    token = body.get("jwt")
+    if not token:
+        raise HTTPException(400, "Se esperaba {'jwt': <token>}")
+
+    # Verificar y reconstruir Envelope
+    try:
+        env_dict = verify_jwt_token(token)
+        env = Envelope.model_validate(env_dict)
+    except Exception as e:
+        raise HTTPException(400, f"JWT inválido o firma no verificada: {e}")
+
     if env.type != "heartbeat":
-        raise HTTPException(400, "Tipo de envelope inválido para heartbeat")
+        raise HTTPException(400, "Tipo de mensaje inválido para heartbeat")
     sender = env.sender
     if sender not in AGENTS:
         raise HTTPException(404, f"Agent '{sender}' no registrado")
-    # Actualizamos el timestamp
+
+    # Actualizar timestamp
     AGENTS[sender]["last_heartbeat"] = env.timestamp.astimezone(timezone.utc)
     return {"status": "ok"}
 
@@ -180,10 +236,9 @@ def agent_status():
     for aid, info in AGENTS.items():
         last = info.get("last_heartbeat")
         status[aid] = {
-            "name": info["name"],
+            "name":           info["name"],
             "last_heartbeat": last if last else None,
-            # marcamos online si hemos recibido un latido en los últimos 2 * HEARTBEAT_INTERVAL
-            "online": bool(last and (now - last).total_seconds() < (2*HEARTBEAT_INTERVAL))
+            "online":         bool(last and (now - last).total_seconds() < (2*HEARTBEAT_INTERVAL))
         }
     return status
 
@@ -195,7 +250,6 @@ con = duckdb.connect(DB_PATH)
 con.execute("LOAD iceberg;")
 
 @app.get("/tool/consulta")
-# Ejecutar consulta MCP
 def ejecutar_consulta(sql: str):
     try:
         resultado = con.execute(sql).fetchall()
@@ -206,7 +260,6 @@ def ejecutar_consulta(sql: str):
         return {"error": str(e)}
 
 @app.get("/tool/info/productos")
-# Contexto MCP
 def obtener_productos():
     try:
         resultado = con.execute("SELECT DISTINCT producto FROM iceberg_space.ventas").fetchall()
@@ -216,11 +269,9 @@ def obtener_productos():
         return {"error": str(e)}
 
 @app.get("/tool/info/fechas")
-# Contexto MCP
 def obtener_rango_fechas():
     try:
         resultado = con.execute("SELECT MIN(fecha), MAX(fecha) FROM iceberg_space.ventas").fetchone()
         return {"min_fecha": str(resultado[0]), "max_fecha": str(resultado[1])}
     except Exception as e:
         return {"error": str(e)}
-

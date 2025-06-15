@@ -1,5 +1,3 @@
-# utils/model_utils.py
-
 import re
 import os
 import json

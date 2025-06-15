@@ -1,5 +1,3 @@
-# server/a2a_models.py
-
 from pydantic import BaseModel, HttpUrl
 from datetime import datetime
 from typing import Any, Dict, Literal, Optional
