@@ -36,7 +36,7 @@ class Envelope(BaseModel):
     sender: str                                      # agent_id emisor
     recipient: str                                   # agent_id destinatario
     payload: Dict[str, Any]                          # el A2AMessage.model_dump()
-
+    correlation_id: Optional[str] = None              # ID de correlación opcional
 
 class ServiceCard(BaseModel):
     service_id: str
@@ -44,3 +44,13 @@ class ServiceCard(BaseModel):
     input_schema: Dict[str, Any]   # p.ej. {"sql": "string"}
     output_schema: Dict[str, Any]  # p.ej. {"resultado": "list[dict]"}
     version: str = "1.0"
+
+class AgentCard(BaseModel):
+    
+    agent_id: str
+    name: str
+    callback_url: HttpUrl
+    capabilities: Dict[str, Any]  # p.ej. {"tool": "sql", "role": "query"}
+    last_heartbeat: datetime
+    online: bool
+        
