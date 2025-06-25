@@ -1,120 +1,84 @@
-# Documentación del TFG: Interconexión entre Espacios de Datos e Inteligencia Artificial Generativa
+# JAR-A2A: Comunicación Multiagente Soberana con Protocolos MCP y A2A
 
-**Fecha**: 11/04/2025  
-**Autor**: Jaime Alonso Ruiz
-**Tutor**: Joaquín Salvachúa
-**Título del TFG**: *Diseño e implementación de interconexión entre espacios de datos e inteligencia artificial generativa*
+Este repositorio contiene la implementación de un sistema de comunicación multiagente basado en modelos de lenguaje (LLM), construido como prueba de concepto del **protocolo JAR-A2A** (Any-to-Any). El sistema integra dos protocolos inspirados en la literatura reciente: **MCP (Model Context Protocol)** y **A2A**, con un diseño modular preparado para su integración futura con marcos de identidad soberana y espacios de datos federados.
 
----
+## 🔍 Propósito del Proyecto
 
-## Propósito del proyecto
+Este trabajo se enmarca en un proyecto de investigación centrado en la intersección entre:
 
-El objetivo principal de este Trabajo de Fin de Grado es diseñar e implementar una arquitectura funcional y escalable que permita a un sistema multiagente (LLMs) interactuar entre sí mediante un **protocolo estandarizado** basado en el **Google A2A (Agent to Agent)**, y con un espacio de datos utilizando el **Model Context Protocol (MCP)**.  
-Los agentes **no deben interactuar directamente entre sí ni acceder directamente a la base de datos**, sino que todas las operaciones deben realizarse exclusivamente a través del Broker A2A-MCP, que actúa como Hub intermediario, seguro, modular y extensible.
+- Comunicación entre agentes inteligentes distribuidos
+- Acceso soberano a datos en entornos federados (Data Spaces)
+- Estándares emergentes como **Google A2A** y **Gaia-X Trust Framework**
 
----
-
-## Infraestructura actual
-
-Se ha desplegado una infraestructura de contenedores basada en **Docker Compose** que incluye:
-
-o	**Un servidor MCP** que actúa como broker de mensajes A2A.
-
-o	**Un agente LLM** que genera consultas **SQ**L a partir de preguntas en **lenguaje natural**.
-
-o	**Un agente** de ventas que **ejecuta las consultas** SQL sobre una base de datos en formato Iceberg y **responde con los resultados**.
-
-•	Cada componente ha sido diseñado de forma modular e independiente, con **interfaces REST** expuestas mediante **FastAPI**.
-
-•	Se ha utilizado **DuckDB** como motor de consultas para el backend en esta primera fase local.
-
-- **Espacio de datos**
-  - Implementado localmente usando DuckDB (`lake.duckdb`).
-  - Contiene una tabla `iceberg_space.ventas` con las siguientes columnas:
-    - `fecha` (DATE)
-    - `producto` (TEXT)
-    - `cantidad` (INTEGER)
-    - `precio` (DOUBLE)
-  - Los datos se cargan desde `load_data.py`.
+El objetivo principal es ofrecer una arquitectura abierta y extensible para la mensajería entre agentes autónomos, compatible con principios de interoperabilidad, trazabilidad y control de identidad.
 
 ---
 
-## Protocolo de comunicación A2A
-- Se ha definido un protocolo de mensajes A2A basado en objetos JSON que siguen un esquema tipo:
+## 🧱 Estructura del Sistema
 
->  
-  
-    {
-    
-      "message_id": "uuid",
-    
-	    "sender": "agent_id",
-   
-	    "recipient": "agent_id",
-   
-	    "timestamp": "ISO8601",
-   
-	    "type": "query" | "response",
-   
-	    "body": {...}
-   
-	  }
-- El MCP almacena un registro en memoria de los agentes registrados, incluyendo su agent_id y su URL de callback.
-- Los agentes se registran al inicio mediante un mensaje POST /agent/register. El agent_id puede ser fijo o generado aleatoriamente por el MCP si no se especifica.
-- El agente LLM actúa como iniciador de las consultas, enviando mensajes query al agente de ventas.
-- El agente de ventas responde con un mensaje response, incluyendo el resultado y un correlation_id para que el LLM pueda completar la consulta.
+El sistema se compone de tres microservicios principales:
+
+- **LLM Agent**: Genera consultas SQL a partir de preguntas en lenguaje natural.
+- **MCP Server**: Actúa como broker, registrador y pasarela de acceso a la base de datos.
+- **Ventas Agent**: Ejecuta consultas SQL y devuelve resultados estructurados.
+- - 🧪 **DuckDB + Apache Iceberg**: se ha utilizado un lake-house local con la tabla `iceberg_space.ventas` que contiene:
+  - `fecha` (DATE)
+  - `producto` (TEXT)
+  - `cantidad` (INTEGER)
+  - `precio` (DOUBLE)
+
+Todos los servicios se comunican utilizando el protocolo **JAR-A2A**, que extiende el modelo de envelopes definido por Google con mecanismos de control asincrónico, retransmisión, discovery semántico y separación lógica de servicios.
 
 ---
 
-## Agente LLM
-- Se ha integrado el modelo de lenguaje TinyLlama (TinyLlama-1.1B-Chat-v1.0) de forma local usando transformers, para evitar dependencias externas.
--	El agente LLM genera prompts contextualizados con metadatos obtenidos del MCP (productos y fechas disponibles), mediante el Modern Context Protocol (MCP), para generar SQL válido.
--	También es responsable de convertir los resultados en lenguaje natural mediante un segundo prompt.
--	El agente soporta un endpoint /query que acepta preguntas en lenguaje natural y coordina todo el ciclo de consulta y respuesta
+## 🧪 Funcionalidades implementadas
+
+- Registro dinámico de agentes y descubrimiento por capacidades
+- Confirmación de entrega (ACKs) y retransmisión en caso de fallo
+- Heartbeats periódicos para supervisión de disponibilidad
+- Correlación de mensajes mediante `correlation_id`
+- Exposición de servicios contextualizados vía protocolo MCP
+- Generación automática de SQL a partir de lenguaje natural con LLM local
+- Comunicación A2A entre agentes mediante mensajes JSON estructurados
 
 ---
 
-## Identificadores fijos y configuración
--	Se han fijado los agent_id de ambos agentes mediante un fichero .env, y se ha corregido la configuración para que el contenedor ventas-agent lo importe correctamente.
--	Se han introducido mejoras de robustez como:
--	Esperas iniciales para resolución DNS y arranque del MCP.
--	Retransmisiones exponenciales en caso de fallo de registro.
--	Registro de logs detallado en cada componente.
+## ⚙️ Tecnologías empleadas
+
+- Python 3.11
+- FastAPI
+- Docker & Docker Compose
+- DuckDB
+- Apache Iceberg
+- TinyLlama (modelo LLM local)
+- JWT (explorado para futura integración de seguridad federada)
 
 ---
 
-## Cliente de consola
-Se ha creado un script CLI que permite interactuar con el sistema desde la terminal, enviando preguntas al LLM-Agent y mostrando en consola el SQL generado y la respuesta.
+## 🚀 Despliegue local
 
----
+El proyecto se despliega localmente mediante Docker Compose:
 
-## Principios y decisiones clave
+```bash
+docker compose build
+docker compose up
+````
+Para replicar las pruebas del flujo de comunicación realizadas durante la documentación del proyecto, se puede hacer uso del script cli.py:
 
-- Separación estricta entre procesamiento semántico (LLM) y acceso a datos (MCP).
-- Cumplimiento del diseño propuesto por MCP: los LLMs acceden a los datos solo a través de herramientas ("tools").
-- Uso de prompts enriquecidos con información contextual previa obtenida del MCP.
-- Cumplimiento de las especificaciones publicadas del Google A2A.
-- Arquitectura modular, extensible y trazable mediante logs.
+```bash
+python scripts/cli.py "Introduzca-consulta-al-LLM"
+````
 
----
+Asegúrate de que los puertos 8000, 8002 y 8003 estén libres. La interfaz de consulta está expuesta en el puerto 8003 bajo el endpoint /query.
 
-## Plan de Trabajo Futuro
+## Consideraciones de seguridad
 
-- **Verificación funcional completa:** Realizar pruebas de extremo a extremo entre el cliente CLI, el LLM-Agent, el broker MCP y el agente de ventas.
-- **Extensión al protocolo Google A2A:** Adoptar elementos clave de la especificación Google A2A, incluyendo:
-  - Identidad estructurada y metadatos del agente (Agent Card).
-  - Soporte opcional de JSON-RPC 2.0.
-  - Canal de eventos unidireccional (eventos push) con Server-Sent Events (SSE).
+Aunque el sistema no incorpora por defecto mecanismos criptográficos, ha sido diseñado para permitir en el futuro:
 
-- **Persistencia y auditoría:**
-  - Extensión del MCP para registrar mensajes y agentes en una base de datos (SQLite o PostgreSQL)..
-  - Incorporación de IDs de conversación para trazabilidad.
- 
-- **Documentación y despliegue local reproducible:**
-  - Redacción de README técnico con instrucciones paso a paso.
-  - Scripts automáticos de puesta en marcha y pruebas.
+- Firma de mensajes (JWT + RS256)
 
-## Conclusión provisional
+- Identidad descentralizada (DID + Verifiable Credentials)
 
-Hasta la fecha, se ha implementado de forma satisfactoria una arquitectura funcional basada en agentes cooperantes que utilizan lenguaje natural y SQL para consultar datos sobre un formato Iceberg. Se ha verificado la comunicación mediante un broker A2A minimalista, y el sistema ha demostrado ser modular, escalable y ampliable hacia futuros estándares de interoperabilidad como Google A2A.
+- Validación de políticas de autorización y trazabilidad
 
+  Puede consultarte la exploración a esta aproximación implementada en la rama **security**.
