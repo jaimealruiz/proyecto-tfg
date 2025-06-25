@@ -1,120 +1,82 @@
-# Documentación del TFG: Interconexión entre Espacios de Datos e Inteligencia Artificial Generativa
+# JAR-A2A (Branch: security) — Comunicación Multiagente con Seguridad Criptográfica
 
-**Fecha**: 11/04/2025  
-**Autor**: Jaime Alonso Ruiz
-**Tutor**: Joaquín Salvachúa
-**Título del TFG**: *Diseño e implementación de interconexión entre espacios de datos e inteligencia artificial generativa*
+Esta rama del repositorio incorpora una versión extendida del sistema JAR-A2A con **firma digital de mensajes A2A** utilizando JWT con claves RSA-2048 (RS256). Supone una evolución natural de la arquitectura definida en la rama principal, orientada a su uso en entornos federados con requisitos de **autenticación, integridad y trazabilidad**.
 
 ---
 
-## Propósito del proyecto
+## 🔐 Características de Seguridad
 
-El objetivo principal de este Trabajo de Fin de Grado es diseñar e implementar una arquitectura funcional y escalable que permita a un sistema multiagente (LLMs) interactuar entre sí mediante un **protocolo estandarizado** basado en el **Google A2A (Agent to Agent)**, y con un espacio de datos utilizando el **Model Context Protocol (MCP)**.  
-Los agentes **no deben interactuar directamente entre sí ni acceder directamente a la base de datos**, sino que todas las operaciones deben realizarse exclusivamente a través del Broker A2A-MCP, que actúa como Hub intermediario, seguro, modular y extensible.
-
----
-
-## Infraestructura actual
-
-Se ha desplegado una infraestructura de contenedores basada en **Docker Compose** que incluye:
-
-o	**Un servidor MCP** que actúa como broker de mensajes A2A.
-
-o	**Un agente LLM** que genera consultas **SQ**L a partir de preguntas en **lenguaje natural**.
-
-o	**Un agente** de ventas que **ejecuta las consultas** SQL sobre una base de datos en formato Iceberg y **responde con los resultados**.
-
-•	Cada componente ha sido diseñado de forma modular e independiente, con **interfaces REST** expuestas mediante **FastAPI**.
-
-•	Se ha utilizado **DuckDB** como motor de consultas para el backend en esta primera fase local.
-
-- **Espacio de datos**
-  - Implementado localmente usando DuckDB (`lake.duckdb`).
-  - Contiene una tabla `iceberg_space.ventas` con las siguientes columnas:
-    - `fecha` (DATE)
-    - `producto` (TEXT)
-    - `cantidad` (INTEGER)
-    - `precio` (DOUBLE)
-  - Los datos se cargan desde `load_data.py`.
+- 📜 **Mensajes firmados con JWT RS256**
+  - Cada mensaje A2A se firma con la clave privada del agente emisor.
+  - El broker (MCP) valida la firma mediante la clave pública correspondiente.
+- 🧾 **Validación del campo `aud` (audience)**
+  - Se garantiza que los mensajes van dirigidos al broker correcto.
+- 🧠 **Emisor lógico como `iss`**
+  - El campo `iss` representa el nombre lógico del agente (`llm_agent`, `ventas_agent`, etc.), no el `agent_id` dinámico.
 
 ---
 
-## Protocolo de comunicación A2A
-- Se ha definido un protocolo de mensajes A2A basado en objetos JSON que siguen un esquema tipo:
+## 🔧 Requisitos adicionales
 
->  
-  
-    {
-    
-      "message_id": "uuid",
-    
-	    "sender": "agent_id",
-   
-	    "recipient": "agent_id",
-   
-	    "timestamp": "ISO8601",
-   
-	    "type": "query" | "response",
-   
-	    "body": {...}
-   
-	  }
-- El MCP almacena un registro en memoria de los agentes registrados, incluyendo su agent_id y su URL de callback.
-- Los agentes se registran al inicio mediante un mensaje POST /agent/register. El agent_id puede ser fijo o generado aleatoriamente por el MCP si no se especifica.
-- El agente LLM actúa como iniciador de las consultas, enviando mensajes query al agente de ventas.
-- El agente de ventas responde con un mensaje response, incluyendo el resultado y un correlation_id para que el LLM pueda completar la consulta.
+- Las claves RSA deben estar ubicadas y montadas en contenedores vía volumen:
+	- /secrets/private.pem # Clave privada del agente
+	- /secrets/public_keys/ # Directorio con las claves públicas de todos los agentes
+
+
+- Variables de entorno necesarias en cada servicio:
+- `PRIVATE_KEY_PATH`
+- `PUBLIC_KEYS_DIR`
+- `BROKER_ID` (nombre lógico del MCP, usado como audience esperada)
 
 ---
 
-## Agente LLM
-- Se ha integrado el modelo de lenguaje TinyLlama (TinyLlama-1.1B-Chat-v1.0) de forma local usando transformers, para evitar dependencias externas.
--	El agente LLM genera prompts contextualizados con metadatos obtenidos del MCP (productos y fechas disponibles), mediante el Modern Context Protocol (MCP), para generar SQL válido.
--	También es responsable de convertir los resultados en lenguaje natural mediante un segundo prompt.
--	El agente soporta un endpoint /query que acepta preguntas en lenguaje natural y coordina todo el ciclo de consulta y respuesta
+## 🧱 Arquitectura
+
+El sistema sigue el mismo esquema multiagente de la rama principal, con las siguientes diferencias clave:
+
+- Todos los mensajes A2A enviados al broker (MCP) están firmados.
+- El broker valida la firma y reconstruye el `Envelope` o `Jar`.
+- Se han adaptado los agentes para incluir campos `iss` y `aud` correctamente.
 
 ---
 
-## Identificadores fijos y configuración
--	Se han fijado los agent_id de ambos agentes mediante un fichero .env, y se ha corregido la configuración para que el contenedor ventas-agent lo importe correctamente.
--	Se han introducido mejoras de robustez como:
--	Esperas iniciales para resolución DNS y arranque del MCP.
--	Retransmisiones exponenciales en caso de fallo de registro.
--	Registro de logs detallado en cada componente.
+## 🧪 Estado del sistema
+
+✔️ Funcionalidades activas:
+
+- Registro, discovery y heartbeats verificados con JWT
+- Retransmisión con ACKs firmados
+- Generación de consultas por LLM y ejecución distribuida
+- Validación de `aud` y `iss` por parte del broker
+
+⚠️ Funcionalidades aún no implementadas:
+
+- Firma de respuestas devueltas por el broker
+- Rotación y gestión automatizada de claves
+- Identidad federada mediante DID + VC
 
 ---
 
-## Cliente de consola
-Se ha creado un script CLI que permite interactuar con el sistema desde la terminal, enviando preguntas al LLM-Agent y mostrando en consola el SQL generado y la respuesta.
+## 🛠️ Despliegue
 
----
+```bash
+docker compose -f docker-compose.yml --env-file .env up --build
+```
 
-## Principios y decisiones clave
+Ejemplo de variables necesarias en .env:
 
-- Separación estricta entre procesamiento semántico (LLM) y acceso a datos (MCP).
-- Cumplimiento del diseño propuesto por MCP: los LLMs acceden a los datos solo a través de herramientas ("tools").
-- Uso de prompts enriquecidos con información contextual previa obtenida del MCP.
-- Cumplimiento de las especificaciones publicadas del Google A2A.
-- Arquitectura modular, extensible y trazable mediante logs.
+BROKER_ID=mcp-server
+PRIVATE_KEY_PATH=/secrets/private.pem
+PUBLIC_KEYS_DIR=/secrets/public_keys
+LLM_AGENT_ID=...
+VENTAS_AGENT_ID=...
 
----
+## 📄 Archivos clave
+- security/security.py: Firma y verificación de tokens JWT.
 
-## Plan de Trabajo Futuro
+- main.py (agentes): Firma de heartbeats, ACKs y mensajes A2A.
 
-- **Verificación funcional completa:** Realizar pruebas de extremo a extremo entre el cliente CLI, el LLM-Agent, el broker MCP y el agente de ventas.
-- **Extensión al protocolo Google A2A:** Adoptar elementos clave de la especificación Google A2A, incluyendo:
-  - Identidad estructurada y metadatos del agente (Agent Card).
-  - Soporte opcional de JSON-RPC 2.0.
-  - Canal de eventos unidireccional (eventos push) con Server-Sent Events (SSE).
+- server/main.py: Verificación y reenvío de JWT firmados.
 
-- **Persistencia y auditoría:**
-  - Extensión del MCP para registrar mensajes y agentes en una base de datos (SQLite o PostgreSQL)..
-  - Incorporación de IDs de conversación para trazabilidad.
- 
-- **Documentación y despliegue local reproducible:**
-  - Redacción de README técnico con instrucciones paso a paso.
-  - Scripts automáticos de puesta en marcha y pruebas.
-
-## Conclusión provisional
-
-Hasta la fecha, se ha implementado de forma satisfactoria una arquitectura funcional basada en agentes cooperantes que utilizan lenguaje natural y SQL para consultar datos sobre un formato Iceberg. Se ha verificado la comunicación mediante un broker A2A minimalista, y el sistema ha demostrado ser modular, escalable y ampliable hacia futuros estándares de interoperabilidad como Google A2A.
-
+## 🧭 Consideraciones
+Esta rama constituye una prueba de concepto de seguridad para el protocolo JAR-A2A, y servirá de base para la integración futura con identidad soberana (SSI) y mecanismos de confianza federada. Se recomienda consultar la rama principal para la versión estable sin seguridad criptográfica.
