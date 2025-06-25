@@ -1,80 +1,78 @@
-# Documentación del TFG: Interconexión entre Espacios de Datos e Inteligencia Artificial Generativa
+# Rama `mcp-Iceberg` – Implementación inicial del lago de datos local
 
-**Fecha**: 11/04/2025  
-**Autor**: Jaime Alonso Ruiz
-**Tutor**: Joaquín Salvachúa
-**Título del TFG**: *Diseño e implementación de interconexión entre espacios de datos e inteligencia artificial generativa*
+Esta rama recoge la primera fase funcional del proyecto, en la que se diseñó e implementó un **lago de datos local** basado en Apache Iceberg utilizando **DuckDB como motor de consultas**. Su objetivo principal fue validar el protocolo MCP para acceso estructurado a datos en lenguaje natural, sirviendo como base del desarrollo posterior orientado a agentes A2A.
 
 ---
 
-## 🎯 Propósito del proyecto
+## 📌 Objetivos principales de esta rama
 
-El objetivo principal de este Trabajo de Fin de Grado es diseñar e implementar una arquitectura funcional y escalable que permita a un modelo de lenguaje (LLM) interactuar con un espacio de datos utilizando el **Model Context Protocol (MCP)**.  
-El cliente (el modelo de lenguaje) **no debe acceder directamente a la base de datos**, sino que todas las operaciones deben realizarse exclusivamente a través del servidor MCP, que actúa como capa intermedia segura, modular y extensible.
+- Implementar un **servidor MCP** que sirviera de interfaz única para los modelos LLM, gestionando consultas y metadatos.
+- Crear un **lago de datos local** usando Iceberg y DuckDB.
+- Exponer endpoints REST para:
+  - Ejecutar consultas SQL.
+  - Obtener metainformación (productos disponibles, rango de fechas).
+- Cargar datos en formato CSV de forma reproducible para pruebas.
 
----
-
-## 🧱 Arquitectura actual
-
-### Componentes principales:
-
-- **🧠 Cliente LLM (`cliente_llm.py`)**
-  - Ejecuta preguntas en lenguaje natural.
-  - Utiliza el modelo `TinyLlama-1.1B-Chat-v1.0`.
-  - Genera consultas SQL a partir de preguntas.
-  - Consulta datos exclusivamente a través del servidor MCP.
-  - Interpreta los resultados devueltos y construye una respuesta explicativa.
-  - Registra todo el proceso en un log: `logs/cliente_llm.log`.
-
-- **🔗 Servidor MCP (`main.py`)**
-  - Desarrollado en FastAPI.
-  - Conectado a un espacio de datos local basado en DuckDB.
-  - Exposición de herramientas MCP mediante endpoints REST:
-    - `/tool/consulta`: ejecuta una consulta SQL.
-    - `/tool/info/productos`: devuelve la lista de productos distintos.
-    - `/tool/info/fechas`: devuelve el rango mínimo y máximo de fechas registradas.
-
-- **📂 Espacio de datos**
-  - Implementado localmente usando DuckDB (`lake.duckdb`).
-  - Contiene una tabla `iceberg_space.ventas` con las siguientes columnas:
-    - `fecha` (DATE)
-    - `producto` (TEXT)
-    - `cantidad` (INTEGER)
-    - `precio` (DOUBLE)
-  - Los datos se cargan desde `load_data.py`.
 
 ---
 
-## 🔒 Principios y decisiones clave
+## 🔁 Flujo general del sistema
 
-- ✅ Separación estricta entre procesamiento semántico (LLM) y acceso a datos (MCP).
-- ✅ Cumplimiento del diseño propuesto por MCP: los LLMs acceden a los datos solo a través de herramientas ("tools").
-- ✅ Uso de prompts enriquecidos con información contextual previa obtenida del MCP.
-- ✅ Arquitectura modular, extensible y trazable mediante logs.
-
----
-
-## 📈 Escalabilidad futura
-
-El diseño actual se ha planteado desde el principio con una visión clara de crecimiento:
-
-- 🔁 Sustitución futura de DuckDB por Apache Iceberg real o incluso Trino/Presto.
-- 🤖 Sustitución del modelo TinyLlama por un LLM más avanzado o alojado en GPU.
-- 🔎 Evolución hacia una arquitectura RAG (Retrieval-Augmented Generation), donde:
-  - El LLM consulta primero un vector store basado en embeddings generados desde el MCP.
-  - El contenido recuperado se pasa como contexto al modelo para respuestas más precisas.
-
-Además, se podrán incorporar nuevas herramientas MCP como:
-
-- `/tool/info/esquema`
-- `/tool/info/documentacion`
-- `/tool/descargar`
-- `/tool/upload-pdf`
+1. Los datos de ventas se almacenan en archivos `.csv` dentro de `/data/csv`.
+2. El script `load_data.py` carga esos datos en una tabla Iceberg.
+3. El servidor MCP expone endpoints para:
+   - Realizar consultas SQL (`/tool/consulta`)
+   - Obtener metadatos de productos (`/tool/info/productos`)
+   - Obtener rangos de fechas (`/tool/info/fechas`)
+4. DuckDB accede al catálogo Iceberg y ejecuta las consultas solicitadas.
 
 ---
 
-## 📜 Conclusión
+## 🧠 Características clave
 
-Se ha establecido una base sólida, funcional y alineada con las exigencias del TFG.  
-El sistema ya permite una interacción completa entre un modelo de lenguaje y un espacio de datos, cumpliendo con los principios del MCP y dejando preparado el camino para su futura evolución hacia un sistema RAG más avanzado.
+- 📦 **Catálogo Iceberg local**: Se gestiona en `/data/warehouse`, accesible desde el contenedor.
+- ✅ **Versión sin Hive**: Se optó por el catálogo tipo `HadoopTables` para simplificar el despliegue.
+- 🧪 **Modo desarrollo habilitado**: Uso de `unsafe_enable_version_guessing = true` para facilitar pruebas.
+- 🔌 **FastAPI con CORS habilitado** para permitir acceso desde otros servicios LLM.
+
+---
+
+## 🚀 Despliegue y uso
+
+### 1. Construir e iniciar los servicios
+
+```bash
+docker-compose up --build
+```
+### 2. Insertar datos
+```bash
+docker-compose exec mcp-server python /app/load_data.py
+```
+
+### 3. Consultar el lago de datos
+
+- Obtener productos:
+```bash
+GET http://localhost:8000/tool/info/productos
+```
+
+- Obtener fechas:
+```bash
+GET http://localhost:8000/tool/info/productos
+```
+
+- Realizar consulta SQL:
+```bash
+GET http://localhost:8000/tool/consulta?sql=SELECT+COUNT(*)+FROM+iceberg_scan('/data/warehouse/ventas')
+```
+
+Esta rama fue utilizada para validar que el protocolo MCP pudiera actuar como punto central entre LLMs y el lago de datos, estableciendo las bases para la posterior arquitectura distribuida basada en agentes A2A.
+
+Las rutas están adaptadas al sistema de archivos del contenedor, asegurando compatibilidad entre WSL2 y Docker.
+
+## ⚠️ Notas
+- Esta rama fue utilizada para validar que el protocolo MCP pudiera actuar como punto central entre LLMs y el lago de datos, estableciendo las bases para la posterior arquitectura distribuida basada en agentes A2A.
+
+- Las rutas están adaptadas al sistema de archivos del contenedor, asegurando compatibilidad entre WSL2 y Docker.
+
 
